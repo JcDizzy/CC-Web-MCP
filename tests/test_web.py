@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 from pathlib import Path
 
 import httpx
@@ -199,6 +200,7 @@ def test_search_web_falls_back_to_bing_cn_when_duckduckgo_fails(monkeypatch):
 
     assert result["ok"] is True
     assert result["backend"] == "bing_cn"
+    assert result["search_scope_note"] == "bing_cn may be region-biased and is used as fallback; it is not equivalent to full global search."
     assert "duckduckgo_html" in result["fallback_reason"]
     assert result["attempted_backends"][0]["backend"] == "duckduckgo_html"
     assert result["attempted_backends"][0]["ok"] is False
@@ -222,6 +224,65 @@ def test_load_config_keeps_ordered_search_providers(tmp_path):
 
     assert config.search_provider == "duckduckgo"
     assert config.search_providers == ("duckduckgo", "bing_cn")
+
+
+def test_search_providers_prefer_explicit_chain_over_legacy_provider(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        """
+        {
+          "search_provider": "searxng",
+          "search_providers": ["duckduckgo", "bing_cn"]
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    config = web.load_config(config_path)
+
+    assert config.search_provider == "searxng"
+    assert config.search_providers == ("duckduckgo", "bing_cn")
+
+
+def test_check_health_reports_configured_search_provider_chain(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        """
+        {
+          "search_providers": ["duckduckgo", "bing_cn"]
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    class FakeResponse:
+        def __init__(self, status_code):
+            self.status_code = status_code
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, follow_redirects=True):
+            if "duckduckgo.com" in url:
+                raise httpx.ConnectError("blocked", request=httpx.Request("GET", url))
+            return FakeResponse(200)
+
+    monkeypatch.setattr(web, "DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr(web.httpx, "AsyncClient", FakeClient)
+
+    health = asyncio.run(web.check_health())
+
+    assert health["search_providers"] == ["duckduckgo", "bing_cn"]
+    assert health["search_backend_status"]["duckduckgo"]["ok"] is False
+    assert health["search_backend_status"]["bing_cn"] == {"ok": True, "status": 200}
+    assert health["first_available_search_backend"] == "bing_cn"
 
 
 def test_validate_fetch_url_only_allows_http_and_https(public_dns):
@@ -508,7 +569,7 @@ def test_fetch_page_uses_jina_fallback_when_primary_fetch_fails(monkeypatch, pub
         response = httpx.Response(403, request=request)
         raise httpx.HTTPStatusError("forbidden", request=request, response=response)
 
-    async def fake_jina_reader(client, url, allow_private_networks=False):
+    async def fake_jina_reader(client, url):
         return {
             "markdown": "Jina fallback markdown",
             "reader_url": "https://r.jina.ai/https://blocked.example/doc",
@@ -530,18 +591,22 @@ def test_jina_reader_revalidates_url_and_blocks_private_networks(monkeypatch):
 
     async def run():
         async with httpx.AsyncClient() as client:
-            await web._fetch_jina_reader_markdown(client, "https://private.example/doc", allow_private_networks=False)
+            await web._fetch_jina_reader_markdown(client, "https://private.example/doc")
 
     with pytest.raises(FetchSafetyError):
         asyncio.run(run())
 
 
-def test_jina_reader_never_allows_private_networks_even_when_requested(monkeypatch):
+def test_jina_reader_has_no_private_network_override_parameter():
+    assert "allow_private_networks" not in inspect.signature(web._fetch_jina_reader_markdown).parameters
+
+
+def test_jina_reader_still_blocks_private_networks_when_config_allows_them(monkeypatch):
     monkeypatch.setattr(web.socket, "getaddrinfo", lambda *args, **kwargs: [(None, None, None, None, ("127.0.0.1", 443))])
 
     async def run():
         async with httpx.AsyncClient() as client:
-            await web._fetch_jina_reader_markdown(client, "https://private.example/doc", allow_private_networks=True)
+            await web._fetch_jina_reader_markdown(client, "https://private.example/doc")
 
     with pytest.raises(FetchSafetyError):
         asyncio.run(run())

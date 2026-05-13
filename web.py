@@ -28,6 +28,7 @@ REQUEST_TIMEOUT = httpx.Timeout(15.0, connect=8.0, read=15.0)
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.json")
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "cc-web-mcp"
 CACHE_SCHEMA_VERSION = 2
+BING_CN_SCOPE_NOTE = "bing_cn may be region-biased and is used as fallback; it is not equivalent to full global search."
 BLOCKED_IP_NETWORKS = tuple(
     ipaddress.ip_network(network)
     for network in (
@@ -412,6 +413,20 @@ def _provider_backend_name(provider: str) -> str:
     return normalized
 
 
+def _search_backend_health_url(provider: str, config: GlobalWebConfig | Any) -> tuple[str, str]:
+    provider = _normalize_search_provider_name(provider)
+    if provider == "searxng":
+        base_url = _cfg(config, "searxng_base_url", "").rstrip("/")
+        if not base_url:
+            raise ValueError("searxng_base_url 不能为空")
+        return provider, f"{base_url}/search"
+    if provider == "bing_cn":
+        return provider, "https://cn.bing.com/"
+    if provider == "duckduckgo":
+        return provider, "https://duckduckgo.com/"
+    raise ValueError(f"不支持的搜索后端: {provider}")
+
+
 async def _search_with_provider(
     provider: str,
     query: str,
@@ -551,7 +566,6 @@ async def _limited_get(
 async def _fetch_jina_reader_markdown(
     client: httpx.AsyncClient,
     url: str,
-    allow_private_networks: bool = False,
 ) -> dict[str, str]:
     safe_url = await validate_fetch_url_async(url, allow_private_networks=False)
     # Jina Reader 的公开用法是给原 URL 加前缀：https://r.jina.ai/https://example.com
@@ -699,6 +713,8 @@ async def search_web(
                 "results": results[:max_results],
                 "attempted_backends": attempted_backends,
             }
+            if backend == "bing_cn":
+                response["search_scope_note"] = BING_CN_SCOPE_NOTE
             if fallback_reason:
                 response["fallback_reason"] = fallback_reason
             return response
@@ -942,10 +958,17 @@ async def research_brief(
 
 async def check_health() -> dict[str, Any]:
     config = load_config()
+    search_providers = _normalize_search_providers(
+        _cfg(config, "search_providers", None),
+        _cfg(config, "search_provider", "duckduckgo"),
+    )
     checks: dict[str, Any] = {
         "ok": True,
         "fetched_at": now_iso(),
         "config": config_to_dict(config),
+        "search_providers": list(search_providers),
+        "search_backend_status": {},
+        "first_available_search_backend": None,
         "dependencies": {
             "mcp": True,
             "httpx": True,
@@ -955,6 +978,18 @@ async def check_health() -> dict[str, Any]:
         "network": {},
     }
     async with httpx.AsyncClient(headers=_headers(), timeout=REQUEST_TIMEOUT) as client:
+        for provider in search_providers:
+            try:
+                backend, url = _search_backend_health_url(provider, config)
+                response = await client.get(url, follow_redirects=True)
+                status = {"ok": response.status_code < 500, "status": response.status_code}
+                checks["search_backend_status"][backend] = status
+                if status["ok"] and checks["first_available_search_backend"] is None:
+                    checks["first_available_search_backend"] = backend
+            except Exception as exc:
+                backend = _normalize_search_provider_name(provider)
+                checks["search_backend_status"][backend] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
         for name, url in {
             "duckduckgo": "https://duckduckgo.com/",
             "bing_cn": "https://cn.bing.com/",

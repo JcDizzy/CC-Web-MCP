@@ -2,7 +2,6 @@
   "allowed_model_patterns": [
     "deepseek"
   ],
-  "search_provider": "duckduckgo",
   "search_providers": [
     "duckduckgo",
     "bing_cn"

@@ -65,7 +65,6 @@ claude mcp get cc-web
 ```json
 {
   "allowed_model_patterns": ["deepseek"],
-  "search_provider": "duckduckgo",
   "search_providers": ["duckduckgo", "bing_cn"],
   "searxng_base_url": "",
   "prefer_technical_sources": true,
@@ -83,6 +82,8 @@ claude mcp get cc-web
   "enable_pdf_extract": false
 }
 ```
+
+`search_providers` 是推荐配置，表示按顺序尝试多个搜索后端。旧版 `search_provider` 仍兼容，但不建议新配置继续使用单后端字段。
 
 如果要同时适用于更多模型：
 
@@ -164,7 +165,6 @@ py -3.11 -m pytest .\tests -q
 
 ```json
 {
-  "search_provider": "searxng",
   "search_providers": ["searxng", "duckduckgo", "bing_cn"],
   "searxng_base_url": "https://your-searxng.example"
 }
@@ -175,8 +175,11 @@ py -3.11 -m pytest .\tests -q
 如果本机网络访问 DuckDuckGo 不稳定，CC Web MCP 会按 `search_providers` 顺序继续尝试后续后端。默认配置会降级到 `bing_cn`，返回结果里会包含：
 
 - `backend`：本次实际使用的搜索后端，例如 `bing_cn`。
+- `search_scope_note`：当使用 `bing_cn` 时提醒模型这是区域偏置的 fallback，不等价于完整全球搜索。
 - `fallback_reason`：触发降级的原因，例如 `duckduckgo_html failed: ...`。
 - `attempted_backends`：每个搜索后端的尝试结果。
+
+`health_check` 也会返回 `search_providers`、`search_backend_status` 和 `first_available_search_backend`，方便你一眼判断当前环境到底能用哪个搜索后端。
 
 这样模型可以继续拿到可用资料，同时知道当前不是完整的 DuckDuckGo/全球搜索结果。
 
@@ -215,7 +218,7 @@ py -3.11 -m pip install -r requirements-optional.txt
 
 ```json
 {
-  "search_provider": "duckduckgo",
+  "search_providers": ["duckduckgo", "bing_cn"],
   "searxng_base_url": "",
   "tavily_api_key_env": "TAVILY_API_KEY",
   "brave_api_key_env": "BRAVE_API_KEY"
