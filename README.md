@@ -66,6 +66,7 @@ claude mcp get cc-web
 {
   "allowed_model_patterns": ["deepseek"],
   "search_providers": ["duckduckgo", "bing_cn"],
+  "allow_fetch_url_for_claude": false,
   "searxng_base_url": "",
   "prefer_technical_sources": true,
   "default_fetch_chars": 10000,
@@ -84,6 +85,14 @@ claude mcp get cc-web
 ```
 
 `search_providers` 是推荐配置，表示按顺序尝试多个搜索后端。旧版 `search_provider` 仍兼容，但不建议新配置继续使用单后端字段。
+
+`allow_fetch_url_for_claude` 默认是 `false`。这会让官方 Claude 继续优先使用 Claude Code 内置 `WebSearch/WebFetch`，避免自动误选 cc-web。只有你明确希望官方 Claude 也可以调用 `cc-web fetch_url` 时，才改成：
+
+```json
+"allow_fetch_url_for_claude": true
+```
+
+即使打开这个开关，`web_search` 和 `research_brief` 仍建议只给 `allowed_model_patterns` 中匹配的第三方模型使用。
 
 如果要同时适用于更多模型：
 
@@ -105,7 +114,9 @@ claude mcp get cc-web
 
 ## Hook 守卫
 
-`hooks\guard.py` 可作为 Claude Code `PreToolUse` hook 使用。它会读取 `config.json`，只允许匹配 `allowed_model_patterns` 的模型调用 `mcp__cc-web__*` / `mcp__cc_web__*` 工具。
+`hooks\guard.py` 可作为 Claude Code `PreToolUse` hook 使用。它会读取 `config.json`，默认只允许匹配 `allowed_model_patterns` 的模型调用 `mcp__cc-web__*` / `mcp__cc_web__*` 工具。
+
+例外：当 `allow_fetch_url_for_claude` 为 `true` 时，官方 Claude 可以调用 `fetch_url`；`web_search` 和 `research_brief` 仍会被守卫拦截。
 
 ## 自动授权
 
@@ -198,6 +209,7 @@ py -3.11 -m pip install -r requirements-optional.txt
 ## 已完成
 
 - Hook 守卫：`hooks/guard.py` 已输出 Claude Code `PreToolUse` 的 `hookSpecificOutput.permissionDecision = deny` 结构，降低后续 Claude Code 版本更新导致 hook 行为变化的风险。
+- Claude 误选防护：默认阻止官方 Claude 使用 cc-web，避免它在已有原生 `WebSearch/WebFetch` 时误选本 MCP；可通过 `allow_fetch_url_for_claude` 单独放开 `fetch_url`。
 - 内容类型分流：HTML、纯文本、Markdown、JSON 已分流处理；PDF 和未知二进制类型默认拒绝。
 - 相对链接转绝对链接：Markdown 转换前会把 `<a href>` 解析成绝对链接。
 - 搜索后端可插拔：已支持 `duckduckgo`、`bing_cn` 和 `searxng`，默认按 `duckduckgo -> bing_cn` 降级。

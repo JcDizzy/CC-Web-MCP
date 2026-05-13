@@ -12,16 +12,16 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 mcp = FastMCP(
     "cc-web",
     instructions=(
-        "为指定模型提供只读网页搜索和网页正文抓取。"
-        "官方 Claude 模型应优先使用内置 WebSearch/WebFetch；"
-        "DeepSeek、Qwen、Kimi 等缺少官方搜索能力的模型可使用本 MCP。"
+        "cc-web 主要用于 DeepSeek、Qwen、Kimi 等缺少 Claude Code 原生 WebSearch/WebFetch 能力的第三方模型。"
+        "官方 Claude 模型应优先使用内置 WebSearch/WebFetch，不要主动使用 cc-web。"
+        "只有用户显式要求 cc-web，或配置 allow_fetch_url_for_claude=true 时，官方 Claude 才可使用 fetch_url。"
     ),
 )
 
 
 @mcp.tool()
 async def web_search(query: str, max_results: int = 5, region: str = "wt-wt", language: str = "zh-cn") -> str:
-    """搜索公开网页，返回标题、URL、摘要和抓取时间。"""
+    """仅供缺少原生 WebSearch 的第三方模型搜索公开网页；官方 Claude 应使用内置 WebSearch。"""
     return to_json_text(await search_web(query, max_results, region, language))
 
 
@@ -32,7 +32,7 @@ async def fetch_url(
     start_index: int = 0,
     extract_mode: str = "auto",
 ) -> str:
-    """抓取 http/https URL 正文并转为 Markdown，支持 start_index 分页读取。"""
+    """抓取 http/https URL 正文并转为 Markdown；官方 Claude 默认应使用内置 WebFetch，除非用户显式要求 cc-web 或配置允许。"""
     return to_json_text(await fetch_page(url, max_chars, start_index, extract_mode))
 
 
@@ -44,7 +44,7 @@ async def research_brief(
     region: str = "wt-wt",
     language: str = "zh-cn",
 ) -> str:
-    """搜索并抓取少量来源的短正文，适合先做上下文友好的资料概览。"""
+    """仅供缺少原生 WebSearch/WebFetch 的第三方模型做上下文友好的资料概览；官方 Claude 应使用内置工具。"""
     return to_json_text(await build_research_brief(query, max_sources, max_chars_per_source, region, language))
 
 

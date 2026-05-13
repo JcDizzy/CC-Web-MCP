@@ -64,6 +64,98 @@ def test_pre_tool_use_blocks_non_deepseek_model(tmp_path):
     assert "DeepSeek" in output["permissionDecisionReason"]
 
 
+def test_pre_tool_use_blocks_claude_fetch_url_by_default(tmp_path):
+    state = tmp_path / "state.json"
+    config = tmp_path / "config.json"
+    state.write_text(json.dumps({"s1": {"model": "claude-opus-4-6"}}), encoding="utf-8")
+    config.write_text(json.dumps({"allowed_model_patterns": ["deepseek"]}), encoding="utf-8")
+
+    result = run_guard(
+        state,
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "s1",
+            "tool_name": "mcp__cc-web__fetch_url",
+        },
+        config_path=config,
+    )
+
+    assert result.returncode == 0
+    response = json.loads(result.stdout)
+    output = response["hookSpecificOutput"]
+    assert output["permissionDecision"] == "deny"
+    assert "WebFetch" in output["permissionDecisionReason"]
+
+
+def test_pre_tool_use_allows_claude_fetch_url_when_configured(tmp_path):
+    state = tmp_path / "state.json"
+    config = tmp_path / "config.json"
+    state.write_text(json.dumps({"s1": {"model": "claude-opus-4-6"}}), encoding="utf-8")
+    config.write_text(
+        json.dumps(
+            {
+                "allowed_model_patterns": ["deepseek"],
+                "allow_fetch_url_for_claude": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_guard(
+        state,
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "s1",
+            "tool_name": "mcp__cc-web__fetch_url",
+        },
+        config_path=config,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == ""
+
+
+def test_pre_tool_use_allows_short_claude_model_name_fetch_url_when_configured(tmp_path):
+    state = tmp_path / "state.json"
+    config = tmp_path / "config.json"
+    state.write_text(json.dumps({"s1": {"model": "sonnet"}}), encoding="utf-8")
+    config.write_text(json.dumps({"allow_fetch_url_for_claude": True}), encoding="utf-8")
+
+    result = run_guard(
+        state,
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "s1",
+            "tool_name": "mcp__cc_web__fetch_url",
+        },
+        config_path=config,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == ""
+
+
+def test_pre_tool_use_still_blocks_claude_research_brief_when_fetch_override_is_enabled(tmp_path):
+    state = tmp_path / "state.json"
+    config = tmp_path / "config.json"
+    state.write_text(json.dumps({"s1": {"model": "claude-opus-4-6"}}), encoding="utf-8")
+    config.write_text(json.dumps({"allow_fetch_url_for_claude": True}), encoding="utf-8")
+
+    result = run_guard(
+        state,
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "s1",
+            "tool_name": "mcp__cc-web__research_brief",
+        },
+        config_path=config,
+    )
+
+    assert result.returncode == 0
+    response = json.loads(result.stdout)
+    assert response["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
 def test_pre_tool_use_allows_deepseek_model(tmp_path):
     state = tmp_path / "state.json"
     state.write_text(json.dumps({"s1": {"model": "deepseek-v4-pro[1m]"}}), encoding="utf-8")

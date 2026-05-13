@@ -21,6 +21,7 @@ MODEL_ENV_NAMES = (
     "ANTHROPIC_BASE_URL",
 )
 CC_WEB_TOOL_PREFIXES = ("mcp__cc-web__", "mcp__cc_web__")
+CC_WEB_FETCH_TOOLS = ("mcp__cc-web__fetch_url", "mcp__cc_web__fetch_url")
 
 
 def load_allowed_patterns(path: Path) -> list[str]:
@@ -36,9 +37,29 @@ def load_allowed_patterns(path: Path) -> list[str]:
     return ["deepseek"]
 
 
+def load_config(path: Path) -> dict[str, Any]:
+    try:
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def allow_fetch_url_for_claude(path: Path) -> bool:
+    return bool(load_config(path).get("allow_fetch_url_for_claude", False))
+
+
 def model_matches_patterns(model: str | None, patterns: list[str]) -> bool:
     normalized = (model or "").lower()
     return any(pattern in normalized for pattern in patterns)
+
+
+def is_claude_model(model: str | None) -> bool:
+    normalized = (model or "").lower()
+    return "claude" in normalized or normalized in {"opus", "sonnet", "haiku"}
 
 
 def is_allowed_environment(patterns: list[str]) -> bool:
@@ -85,12 +106,19 @@ def guard_pre_tool_use(payload: dict[str, Any], state_path: Path, config_path: P
     model = str(state.get(session_id, {}).get("model") or "")
     if model_matches_patterns(model, patterns) or is_allowed_environment(patterns):
         return 0
+    if (
+        tool_name in CC_WEB_FETCH_TOOLS
+        and is_claude_model(model)
+        and allow_fetch_url_for_claude(config_path)
+    ):
+        return 0
 
     reason = (
             "cc-web MCP 仅允许配置中匹配的模型使用。"
             f"当前允许模型关键词: {', '.join(patterns)}。"
             "默认场景是给 DeepSeek 等缺少官方搜索能力的模型补全网页访问。"
-            "官方 Claude 请优先使用原生 WebSearch/WebFetch。"
+            "官方 Claude 请优先使用原生 WebSearch/WebFetch；"
+            "如确需允许 Claude 使用 cc-web fetch_url，请显式设置 allow_fetch_url_for_claude: true。"
     )
     response = {
         "hookSpecificOutput": {
