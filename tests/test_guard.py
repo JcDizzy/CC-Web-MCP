@@ -81,6 +81,24 @@ def test_pre_tool_use_allows_deepseek_model(tmp_path):
     assert result.stdout.strip() == ""
 
 
+def test_pre_tool_use_blocks_hyphenated_cc_web_tool_name(tmp_path):
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"s1": {"model": "claude-opus-4-6"}}), encoding="utf-8")
+
+    result = run_guard(
+        state,
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "s1",
+            "tool_name": "mcp__cc-web__web_search",
+        },
+    )
+
+    assert result.returncode == 0
+    response = json.loads(result.stdout)
+    assert response["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
 def test_pre_tool_use_allows_deepseek_environment_alias(tmp_path, monkeypatch):
     state = tmp_path / "state.json"
     state.write_text(json.dumps({"s1": {"model": "sonnet"}}), encoding="utf-8")

@@ -3,6 +3,10 @@
     "deepseek"
   ],
   "search_provider": "duckduckgo",
+  "search_providers": [
+    "duckduckgo",
+    "bing_cn"
+  ],
   "searxng_base_url": "",
   "prefer_technical_sources": true,
   "default_fetch_chars": 10000,

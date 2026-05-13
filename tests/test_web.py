@@ -85,6 +85,38 @@ def test_normalize_searxng_results():
     ]
 
 
+def test_normalize_bing_cn_results():
+    html = """
+    <html><body>
+      <ol id="b_results">
+        <li class="b_algo">
+          <h2><a href="https://learn.microsoft.com/en-us/azure/">Microsoft Learn</a></h2>
+          <div class="b_caption"><p>Official Azure documentation.</p></div>
+        </li>
+        <li class="b_algo">
+          <h2><a href="https://github.com/example/repo">GitHub Repo</a></h2>
+          <p>Repository snippet.</p>
+        </li>
+      </ol>
+    </body></html>
+    """
+
+    results = web.normalize_bing_cn_results(html, max_results=2)
+
+    assert results == [
+        {
+            "title": "Microsoft Learn",
+            "url": "https://learn.microsoft.com/en-us/azure/",
+            "snippet": "Official Azure documentation.",
+        },
+        {
+            "title": "GitHub Repo",
+            "url": "https://github.com/example/repo",
+            "snippet": "Repository snippet.",
+        },
+    ]
+
+
 def test_search_web_uses_searxng_provider(monkeypatch):
     class Config:
         search_provider = "searxng"
@@ -125,6 +157,73 @@ def test_search_web_uses_searxng_provider(monkeypatch):
     assert result["results"][0]["url"] == "https://github.com/example/repo"
 
 
+def test_search_web_falls_back_to_bing_cn_when_duckduckgo_fails(monkeypatch):
+    class Config:
+        search_provider = "duckduckgo"
+        search_providers = ("duckduckgo", "bing_cn")
+        searxng_base_url = ""
+        max_search_results = 10
+        prefer_technical_sources = False
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, params=None, follow_redirects=True):
+            if "duckduckgo.com" in url:
+                raise httpx.ConnectError("blocked", request=httpx.Request("GET", url))
+            assert url == "https://cn.bing.com/search"
+            assert params["q"] == "mcp docs"
+            return httpx.Response(
+                200,
+                text="""
+                <html><body>
+                  <li class="b_algo">
+                    <h2><a href="https://github.com/modelcontextprotocol/servers">MCP Servers</a></h2>
+                    <div class="b_caption"><p>Model Context Protocol servers.</p></div>
+                  </li>
+                </body></html>
+                """,
+                request=httpx.Request("GET", url),
+            )
+
+    monkeypatch.setattr(web.httpx, "AsyncClient", FakeClient)
+
+    result = asyncio.run(web.search_web("mcp docs", max_results=2, config=Config()))
+
+    assert result["ok"] is True
+    assert result["backend"] == "bing_cn"
+    assert "duckduckgo_html" in result["fallback_reason"]
+    assert result["attempted_backends"][0]["backend"] == "duckduckgo_html"
+    assert result["attempted_backends"][0]["ok"] is False
+    assert result["attempted_backends"][1] == {"backend": "bing_cn", "ok": True}
+    assert result["results"][0]["url"] == "https://github.com/modelcontextprotocol/servers"
+
+
+def test_load_config_keeps_ordered_search_providers(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        """
+        {
+          "search_provider": "duckduckgo",
+          "search_providers": ["duckduckgo", "bing_cn", "duckduckgo", ""]
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    config = web.load_config(config_path)
+
+    assert config.search_provider == "duckduckgo"
+    assert config.search_providers == ("duckduckgo", "bing_cn")
+
+
 def test_validate_fetch_url_only_allows_http_and_https(public_dns):
     assert validate_fetch_url("https://example.com/path") == "https://example.com/path"
 
@@ -138,11 +237,17 @@ def test_validate_fetch_url_only_allows_http_and_https(public_dns):
 def test_validate_fetch_url_blocks_private_networks_by_default():
     blocked = [
         "http://localhost/admin",
+        "http://0.0.0.0/admin",
         "http://127.0.0.1/admin",
         "http://10.0.0.1/admin",
         "http://172.16.0.1/admin",
         "http://192.168.1.1/admin",
+        "http://100.64.0.1/admin",
         "http://169.254.169.254/latest/meta-data",
+        "http://224.0.0.1/admin",
+        "http://240.0.0.1/admin",
+        "http://255.255.255.255/admin",
+        "http://[::]/admin",
         "http://[::1]/admin",
         "http://[fc00::1]/admin",
         "http://[fe80::1]/admin",
@@ -160,6 +265,29 @@ def test_validate_fetch_url_blocks_hostname_resolving_to_private_ip(monkeypatch)
 
     with pytest.raises(FetchSafetyError):
         validate_fetch_url("https://public-name.example/admin")
+
+
+def test_validate_fetch_url_blocks_hostname_resolving_to_reserved_ip(monkeypatch):
+    monkeypatch.setattr(web.socket, "getaddrinfo", lambda *args, **kwargs: [(None, None, None, None, ("100.64.0.10", 443))])
+
+    with pytest.raises(FetchSafetyError):
+        validate_fetch_url("https://public-name.example/admin")
+
+
+def test_async_validate_fetch_url_resolves_dns_in_thread(monkeypatch):
+    calls = []
+
+    async def fake_to_thread(func, *args, **kwargs):
+        calls.append((func, args, kwargs))
+        return ["127.0.0.1"]
+
+    monkeypatch.setattr(web.asyncio, "to_thread", fake_to_thread)
+
+    with pytest.raises(FetchSafetyError):
+        asyncio.run(web.validate_fetch_url_async("https://public-name.example/admin"))
+
+    assert calls
+    assert calls[0][0] is web._resolved_private_hosts
 
 
 def test_validate_fetch_url_allows_public_dns_resolution(monkeypatch):
@@ -403,6 +531,17 @@ def test_jina_reader_revalidates_url_and_blocks_private_networks(monkeypatch):
     async def run():
         async with httpx.AsyncClient() as client:
             await web._fetch_jina_reader_markdown(client, "https://private.example/doc", allow_private_networks=False)
+
+    with pytest.raises(FetchSafetyError):
+        asyncio.run(run())
+
+
+def test_jina_reader_never_allows_private_networks_even_when_requested(monkeypatch):
+    monkeypatch.setattr(web.socket, "getaddrinfo", lambda *args, **kwargs: [(None, None, None, None, ("127.0.0.1", 443))])
+
+    async def run():
+        async with httpx.AsyncClient() as client:
+            await web._fetch_jina_reader_markdown(client, "https://private.example/doc", allow_private_networks=True)
 
     with pytest.raises(FetchSafetyError):
         asyncio.run(run())

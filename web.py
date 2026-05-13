@@ -31,11 +31,16 @@ CACHE_SCHEMA_VERSION = 2
 BLOCKED_IP_NETWORKS = tuple(
     ipaddress.ip_network(network)
     for network in (
+        "0.0.0.0/8",
         "127.0.0.0/8",
         "10.0.0.0/8",
+        "100.64.0.0/10",
         "172.16.0.0/12",
         "192.168.0.0/16",
         "169.254.0.0/16",
+        "224.0.0.0/4",
+        "240.0.0.0/4",
+        "::/128",
         "::1/128",
         "fc00::/7",
         "fe80::/10",
@@ -58,6 +63,7 @@ class SearchResult:
 class GlobalWebConfig:
     allowed_model_patterns: tuple[str, ...] = ("deepseek",)
     search_provider: str = "duckduckgo"
+    search_providers: tuple[str, ...] = ("duckduckgo", "bing_cn")
     searxng_base_url: str = ""
     prefer_technical_sources: bool = True
     default_fetch_chars: int = 10_000
@@ -87,6 +93,35 @@ def _cfg(config: Any, name: str, default: Any) -> Any:
     return getattr(config, name, default)
 
 
+def _normalize_search_provider_name(provider: Any) -> str:
+    normalized = str(provider or "").strip().lower().replace("-", "_")
+    aliases = {
+        "ddg": "duckduckgo",
+        "duckduckgo_html": "duckduckgo",
+        "bing": "bing_cn",
+        "bingcn": "bing_cn",
+        "bing_china": "bing_cn",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _normalize_search_providers(raw_providers: Any, default_provider: str = "duckduckgo") -> tuple[str, ...]:
+    if isinstance(raw_providers, str):
+        items = [raw_providers]
+    elif isinstance(raw_providers, (list, tuple)):
+        items = list(raw_providers)
+    else:
+        default = _normalize_search_provider_name(default_provider)
+        items = ["duckduckgo", "bing_cn"] if default == "duckduckgo" else [default]
+
+    providers: list[str] = []
+    for item in items:
+        provider = _normalize_search_provider_name(item)
+        if provider and provider not in providers:
+            providers.append(provider)
+    return tuple(providers or ("duckduckgo", "bing_cn"))
+
+
 def load_config(path: str | Path | None = None) -> GlobalWebConfig:
     config_path = Path(path) if path else DEFAULT_CONFIG_PATH
     raw: dict[str, Any] = {}
@@ -105,7 +140,8 @@ def load_config(path: str | Path | None = None) -> GlobalWebConfig:
 
     return GlobalWebConfig(
         allowed_model_patterns=allowed_model_patterns,
-        search_provider=str(raw.get("search_provider") or "duckduckgo").strip().lower(),
+        search_provider=_normalize_search_provider_name(raw.get("search_provider") or "duckduckgo"),
+        search_providers=_normalize_search_providers(raw.get("search_providers"), raw.get("search_provider") or "duckduckgo"),
         searxng_base_url=str(raw.get("searxng_base_url") or "").strip().rstrip("/"),
         prefer_technical_sources=bool(raw.get("prefer_technical_sources", True)),
         default_fetch_chars=_bounded_int(raw.get("default_fetch_chars"), 10_000, 1_000, 60_000),
@@ -128,6 +164,7 @@ def config_to_dict(config: GlobalWebConfig) -> dict[str, Any]:
     return {
         "allowed_model_patterns": list(config.allowed_model_patterns),
         "search_provider": config.search_provider,
+        "search_providers": list(config.search_providers),
         "searxng_base_url": config.searxng_base_url,
         "prefer_technical_sources": config.prefer_technical_sources,
         "default_fetch_chars": config.default_fetch_chars,
@@ -209,6 +246,20 @@ def validate_fetch_url(
     return cleaned
 
 
+async def validate_fetch_url_async(
+    url: str,
+    allow_private_networks: bool = False,
+    resolve_dns: bool = True,
+) -> str:
+    cleaned = validate_fetch_url(url, allow_private_networks=allow_private_networks, resolve_dns=False)
+    if not allow_private_networks and resolve_dns:
+        hostname = urlparse(cleaned).hostname or ""
+        private_ips = await asyncio.to_thread(_resolved_private_hosts, hostname)
+        if private_ips:
+            raise FetchSafetyError(f"域名解析到受限地址，已阻止抓取: {', '.join(private_ips)}")
+    return cleaned
+
+
 def _headers() -> dict[str, str]:
     return {
         "User-Agent": USER_AGENT,
@@ -284,6 +335,31 @@ def normalize_searxng_results(payload: dict[str, Any], max_results: int = 5) -> 
     return [result.__dict__ for result in results]
 
 
+def normalize_bing_cn_results(html: str, max_results: int = 5) -> list[dict[str, str]]:
+    soup = BeautifulSoup(html, "html.parser")
+    results: list[SearchResult] = []
+
+    for item in soup.select("li.b_algo"):
+        anchor = item.select_one("h2 a[href]") or item.select_one("a[href]")
+        if not anchor:
+            continue
+        title = _clean_text(anchor.get_text(" "))
+        url = str(anchor.get("href") or "").strip()
+        if not title or not url:
+            continue
+
+        snippet = ""
+        snippet_node = item.select_one(".b_caption p") or item.select_one("p")
+        if snippet_node:
+            snippet = _clean_text(snippet_node.get_text(" "))
+
+        results.append(SearchResult(title=title, url=url, snippet=snippet))
+        if len(results) >= max_results:
+            break
+
+    return [result.__dict__ for result in results]
+
+
 def _technical_source_score(url: str) -> int:
     host = (urlparse(url).hostname or "").lower()
     path = urlparse(url).path.lower()
@@ -327,6 +403,67 @@ def rank_search_results(results: list[dict[str, str]]) -> list[dict[str, str]]:
             ranked.insert(new_index, current)
 
     return ranked
+
+
+def _provider_backend_name(provider: str) -> str:
+    normalized = _normalize_search_provider_name(provider)
+    if normalized == "duckduckgo":
+        return "duckduckgo_html"
+    return normalized
+
+
+async def _search_with_provider(
+    provider: str,
+    query: str,
+    max_results: int,
+    region: str,
+    language: str,
+    config: GlobalWebConfig | Any,
+) -> tuple[str, list[dict[str, str]]]:
+    provider = _normalize_search_provider_name(provider)
+
+    if provider == "searxng":
+        base_url = _cfg(config, "searxng_base_url", "").rstrip("/")
+        if not base_url:
+            raise ValueError("searxng_base_url 不能为空")
+        async with httpx.AsyncClient(headers=_headers(), timeout=REQUEST_TIMEOUT, max_redirects=5) as client:
+            response = await client.get(
+                f"{base_url}/search",
+                params={"q": query, "format": "json", "language": language or "zh-cn"},
+                follow_redirects=True,
+            )
+            response.raise_for_status()
+            return "searxng", normalize_searxng_results(response.json(), max_results=max_results)
+
+    if provider == "bing_cn":
+        async with httpx.AsyncClient(
+            headers={**_headers(), "Accept-Language": language or "zh-cn"},
+            timeout=REQUEST_TIMEOUT,
+            max_redirects=5,
+        ) as client:
+            response = await client.get(
+                "https://cn.bing.com/search",
+                params={"q": query, "ensearch": "1", "cc": "cn", "setlang": language or "zh-cn"},
+                follow_redirects=True,
+            )
+            response.raise_for_status()
+            return "bing_cn", normalize_bing_cn_results(response.text, max_results=max_results)
+
+    if provider == "duckduckgo":
+        async with httpx.AsyncClient(
+            headers={**_headers(), "Accept-Language": language or "zh-cn"},
+            timeout=REQUEST_TIMEOUT,
+            max_redirects=5,
+        ) as client:
+            response = await client.get(
+                "https://html.duckduckgo.com/html/",
+                params={"q": query, "kl": region or "wt-wt"},
+                follow_redirects=True,
+            )
+            response.raise_for_status()
+            return "duckduckgo_html", normalize_search_results(response.text, max_results=max_results)
+
+    raise ValueError(f"不支持的搜索后端: {provider}")
 
 
 def _best_content_node(soup: BeautifulSoup):
@@ -380,14 +517,14 @@ async def _limited_get(
     url: str,
     allow_private_networks: bool = False,
 ) -> httpx.Response:
-    current_url = validate_fetch_url(url, allow_private_networks=allow_private_networks)
+    current_url = await validate_fetch_url_async(url, allow_private_networks=allow_private_networks)
     for _ in range(6):
         async with client.stream("GET", current_url, follow_redirects=False) as response:
             if response.status_code in {301, 302, 303, 307, 308}:
                 location = response.headers.get("location")
                 if not location:
                     response.raise_for_status()
-                current_url = validate_fetch_url(
+                current_url = await validate_fetch_url_async(
                     urljoin(str(response.url), location),
                     allow_private_networks=allow_private_networks,
                 )
@@ -416,7 +553,7 @@ async def _fetch_jina_reader_markdown(
     url: str,
     allow_private_networks: bool = False,
 ) -> dict[str, str]:
-    safe_url = validate_fetch_url(url, allow_private_networks=allow_private_networks)
+    safe_url = await validate_fetch_url_async(url, allow_private_networks=False)
     # Jina Reader 的公开用法是给原 URL 加前缀：https://r.jina.ai/https://example.com
     reader_url = f"https://r.jina.ai/{safe_url}"
     response = await client.get(reader_url, follow_redirects=True)
@@ -537,54 +674,50 @@ async def search_web(
         return {"ok": False, "error": "query 不能为空", "results": []}
 
     max_results = max(1, min(int(max_results or 5), config.max_search_results))
-    provider = _cfg(config, "search_provider", "duckduckgo")
+    providers = _normalize_search_providers(
+        _cfg(config, "search_providers", None),
+        _cfg(config, "search_provider", "duckduckgo"),
+    )
+    attempted_backends: list[dict[str, Any]] = []
+    fallback_reason = ""
+    last_error = ""
 
-    try:
-        if provider == "searxng":
-            base_url = _cfg(config, "searxng_base_url", "").rstrip("/")
-            if not base_url:
-                raise ValueError("searxng_base_url 不能为空")
-            async with httpx.AsyncClient(headers=_headers(), timeout=REQUEST_TIMEOUT, max_redirects=5) as client:
-                response = await client.get(
-                    f"{base_url}/search",
-                    params={"q": query, "format": "json", "language": language or "zh-cn"},
-                    follow_redirects=True,
-                )
-                response.raise_for_status()
-                results = normalize_searxng_results(response.json(), max_results=max_results)
-            backend = "searxng"
-        else:
-            params = {"q": query, "kl": region or "wt-wt"}
-            url = "https://html.duckduckgo.com/html/"
-            async with httpx.AsyncClient(
-                headers={**_headers(), "Accept-Language": language or "zh-cn"},
-                timeout=REQUEST_TIMEOUT,
-                max_redirects=5,
-            ) as client:
-                response = await client.get(url, params=params, follow_redirects=True)
-                response.raise_for_status()
-                results = normalize_search_results(response.text, max_results=max_results)
-            backend = "duckduckgo_html"
+    for provider in providers:
+        backend = _provider_backend_name(provider)
+        try:
+            backend, results = await _search_with_provider(provider, query, max_results, region, language, config)
+            attempted_backends.append({"backend": backend, "ok": True})
 
-        if _cfg(config, "prefer_technical_sources", True):
-            results = rank_search_results(results)
+            if _cfg(config, "prefer_technical_sources", True):
+                results = rank_search_results(results)
 
-        return {
-            "ok": True,
-            "query": query,
-            "backend": backend,
-            "fetched_at": now_iso(),
-            "results": results[:max_results],
-        }
-    except Exception as exc:
-        return {
-            "ok": False,
-            "query": query,
-            "backend": provider,
-            "fetched_at": now_iso(),
-            "error": f"{type(exc).__name__}: {exc}",
-            "results": [],
-        }
+            response: dict[str, Any] = {
+                "ok": True,
+                "query": query,
+                "backend": backend,
+                "fetched_at": now_iso(),
+                "results": results[:max_results],
+                "attempted_backends": attempted_backends,
+            }
+            if fallback_reason:
+                response["fallback_reason"] = fallback_reason
+            return response
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            attempted_backends.append({"backend": backend, "ok": False, "error": last_error})
+            if not fallback_reason:
+                fallback_reason = f"{backend} failed: {last_error}"
+
+    return {
+        "ok": False,
+        "query": query,
+        "backend": _provider_backend_name(providers[-1]) if providers else "unknown",
+        "fetched_at": now_iso(),
+        "error": last_error or "all search providers failed",
+        "fallback_reason": fallback_reason,
+        "attempted_backends": attempted_backends,
+        "results": [],
+    }
 
 
 async def fetch_page(
@@ -596,7 +729,7 @@ async def fetch_page(
 ) -> dict[str, Any]:
     config = config or load_config()
     try:
-        safe_url = validate_fetch_url(url, allow_private_networks=_cfg(config, "allow_private_networks", False))
+        safe_url = await validate_fetch_url_async(url, allow_private_networks=_cfg(config, "allow_private_networks", False))
     except FetchSafetyError as exc:
         return {"ok": False, "url": url, "error": str(exc)}
 
@@ -624,7 +757,7 @@ async def fetch_page(
                         safe_url,
                         allow_private_networks=_cfg(config, "allow_private_networks", False),
                     )
-                    final_url = validate_fetch_url(
+                    final_url = await validate_fetch_url_async(
                         str(response.url),
                         allow_private_networks=_cfg(config, "allow_private_networks", False),
                     )
@@ -638,7 +771,6 @@ async def fetch_page(
                         jina = await _fetch_jina_reader_markdown(
                             client,
                             safe_url,
-                            allow_private_networks=_cfg(config, "allow_private_networks", False),
                         )
                         markdown_full = jina["markdown"]
                         reader_url = jina["reader_url"]
@@ -651,7 +783,6 @@ async def fetch_page(
                     jina = await _fetch_jina_reader_markdown(
                         client,
                         safe_url,
-                        allow_private_networks=_cfg(config, "allow_private_networks", False),
                     )
                     markdown_full = jina["markdown"]
                     reader_url = jina["reader_url"]
@@ -741,7 +872,7 @@ async def research_brief(
     for result in search.get("results", []):
         raw_url = result.get("url", "")
         try:
-            safe_url = validate_fetch_url(
+            safe_url = await validate_fetch_url_async(
                 raw_url,
                 allow_private_networks=_cfg(config, "allow_private_networks", False),
             )
@@ -826,6 +957,7 @@ async def check_health() -> dict[str, Any]:
     async with httpx.AsyncClient(headers=_headers(), timeout=REQUEST_TIMEOUT) as client:
         for name, url in {
             "duckduckgo": "https://duckduckgo.com/",
+            "bing_cn": "https://cn.bing.com/",
             "github": "https://github.com/",
             "anthropic": "https://www.anthropic.com/",
             "jina_reader": "https://r.jina.ai/https://example.com/",

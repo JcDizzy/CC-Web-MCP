@@ -20,6 +20,7 @@ MODEL_ENV_NAMES = (
     "CLAUDE_CODE_SUBAGENT_MODEL",
     "ANTHROPIC_BASE_URL",
 )
+CC_WEB_TOOL_PREFIXES = ("mcp__cc-web__", "mcp__cc_web__")
 
 
 def load_allowed_patterns(path: Path) -> list[str]:
@@ -75,7 +76,7 @@ def record_session_start(payload: dict[str, Any], state_path: Path) -> None:
 
 def guard_pre_tool_use(payload: dict[str, Any], state_path: Path, config_path: Path) -> int:
     tool_name = str(payload.get("tool_name") or "")
-    if not tool_name.startswith("mcp__cc_web__"):
+    if not tool_name.startswith(CC_WEB_TOOL_PREFIXES):
         return 0
 
     patterns = load_allowed_patterns(config_path)
