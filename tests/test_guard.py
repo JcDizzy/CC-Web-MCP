@@ -191,9 +191,29 @@ def test_pre_tool_use_blocks_hyphenated_cc_web_tool_name(tmp_path):
     assert response["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
-def test_pre_tool_use_allows_deepseek_environment_alias(tmp_path, monkeypatch):
+def test_pre_tool_use_uses_recorded_model_before_deepseek_environment_alias(tmp_path):
     state = tmp_path / "state.json"
     state.write_text(json.dumps({"s1": {"model": "sonnet"}}), encoding="utf-8")
+    env = {**os.environ, "ANTHROPIC_MODEL": "deepseek-v4-pro[1m]"}
+
+    result = run_guard(
+        state,
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "s1",
+            "tool_name": "mcp__cc_web__web_search",
+        },
+        env=env,
+    )
+
+    assert result.returncode == 0
+    response = json.loads(result.stdout)
+    assert response["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_pre_tool_use_allows_deepseek_environment_alias_when_recorded_model_is_missing(tmp_path):
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({}), encoding="utf-8")
     env = {**os.environ, "ANTHROPIC_MODEL": "deepseek-v4-pro[1m]"}
 
     result = run_guard(
