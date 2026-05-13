@@ -6,6 +6,7 @@ import ipaddress
 import json
 import re
 import inspect
+import socket
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +27,20 @@ MAX_DOWNLOAD_BYTES = 5_000_000
 REQUEST_TIMEOUT = httpx.Timeout(15.0, connect=8.0, read=15.0)
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.json")
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "cc-web-mcp"
+CACHE_SCHEMA_VERSION = 2
+BLOCKED_IP_NETWORKS = tuple(
+    ipaddress.ip_network(network)
+    for network in (
+        "127.0.0.0/8",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "169.254.0.0/16",
+        "::1/128",
+        "fc00::/7",
+        "fe80::/10",
+    )
+)
 
 
 class FetchSafetyError(ValueError):
@@ -152,27 +167,45 @@ def _is_private_host(host: str) -> bool:
         return True
     try:
         ip = ipaddress.ip_address(normalized)
-        return bool(
-            ip.is_loopback
-            or ip.is_private
-            or ip.is_link_local
-            or ip.is_multicast
-            or ip.is_reserved
-            or ip.is_unspecified
-        )
+        return any(ip in network for network in BLOCKED_IP_NETWORKS)
     except ValueError:
         return False
 
 
-def validate_fetch_url(url: str, allow_private_networks: bool = False) -> str:
+def _resolved_private_hosts(host: str) -> list[str]:
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except OSError:
+        return []
+    private_ips: list[str] = []
+    for info in infos:
+        sockaddr = info[4]
+        if not sockaddr:
+            continue
+        ip = str(sockaddr[0])
+        if _is_private_host(ip) and ip not in private_ips:
+            private_ips.append(ip)
+    return private_ips
+
+
+def validate_fetch_url(
+    url: str,
+    allow_private_networks: bool = False,
+    resolve_dns: bool = True,
+) -> str:
     cleaned = (url or "").strip()
     parsed = urlparse(cleaned)
     if parsed.scheme not in {"http", "https"}:
         raise FetchSafetyError("仅允许抓取 http/https URL")
     if not parsed.netloc:
         raise FetchSafetyError("URL 缺少主机名")
-    if not allow_private_networks and _is_private_host(parsed.hostname or ""):
+    hostname = parsed.hostname or ""
+    if not allow_private_networks and _is_private_host(hostname):
         raise FetchSafetyError("默认禁止抓取本机、内网、链路本地或云 metadata 地址")
+    if not allow_private_networks and resolve_dns:
+        private_ips = _resolved_private_hosts(hostname)
+        if private_ips:
+            raise FetchSafetyError(f"域名解析到受限地址，已阻止抓取: {', '.join(private_ips)}")
     return cleaned
 
 
@@ -273,9 +306,27 @@ def _technical_source_score(url: str) -> int:
 
 
 def rank_search_results(results: list[dict[str, str]]) -> list[dict[str, str]]:
-    indexed = list(enumerate(results))
-    ranked = sorted(indexed, key=lambda item: (-_technical_source_score(item[1].get("url", "")), item[0]))
-    return [item for _, item in ranked]
+    ranked = list(results)
+    scores = {id(item): _technical_source_score(item.get("url", "")) for item in ranked}
+
+    for index in range(1, len(ranked)):
+        current = ranked[index]
+        current_score = scores[id(current)]
+        if current_score <= 0:
+            continue
+        max_shift = 2 if current_score >= 60 else 1
+        new_index = index
+        while new_index > 0 and index - new_index < max_shift:
+            previous = ranked[new_index - 1]
+            previous_score = scores[id(previous)]
+            if current_score - previous_score < 30:
+                break
+            new_index -= 1
+        if new_index != index:
+            ranked.pop(index)
+            ranked.insert(new_index, current)
+
+    return ranked
 
 
 def _best_content_node(soup: BeautifulSoup):
@@ -360,9 +411,14 @@ async def _limited_get(
     raise FetchSafetyError("重定向次数过多，已停止抓取")
 
 
-async def _fetch_jina_reader_markdown(client: httpx.AsyncClient, url: str) -> dict[str, str]:
+async def _fetch_jina_reader_markdown(
+    client: httpx.AsyncClient,
+    url: str,
+    allow_private_networks: bool = False,
+) -> dict[str, str]:
+    safe_url = validate_fetch_url(url, allow_private_networks=allow_private_networks)
     # Jina Reader 的公开用法是给原 URL 加前缀：https://r.jina.ai/https://example.com
-    reader_url = f"https://r.jina.ai/{url}"
+    reader_url = f"https://r.jina.ai/{safe_url}"
     response = await client.get(reader_url, follow_redirects=True)
     response.raise_for_status()
     return {"markdown": _clean_multiline(response.text), "reader_url": str(response.url)}
@@ -418,8 +474,21 @@ def _format_response_content(response: httpx.Response, extract_mode: str, config
     return _clean_multiline(response.text)
 
 
-def _cache_key(url: str, extract_mode: str, backend_hint: str = "direct") -> str:
-    raw = json.dumps({"url": url, "extract_mode": extract_mode, "backend": backend_hint}, sort_keys=True)
+def _cache_key(
+    url: str,
+    extract_mode: str,
+    backend_hint: str = "direct",
+    schema_version: int = CACHE_SCHEMA_VERSION,
+) -> str:
+    raw = json.dumps(
+        {
+            "schema_version": schema_version,
+            "url": url,
+            "extract_mode": extract_mode,
+            "backend": backend_hint,
+        },
+        sort_keys=True,
+    )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -566,7 +635,11 @@ async def fetch_page(
 
                     if _cfg(config, "enable_jina_fallback", True) and len(markdown_full) < _cfg(config, "jina_min_chars", 300):
                         fallback_reason = f"direct content too short: {len(markdown_full)} chars"
-                        jina = await _fetch_jina_reader_markdown(client, safe_url)
+                        jina = await _fetch_jina_reader_markdown(
+                            client,
+                            safe_url,
+                            allow_private_networks=_cfg(config, "allow_private_networks", False),
+                        )
                         markdown_full = jina["markdown"]
                         reader_url = jina["reader_url"]
                         backend = "jina_reader"
@@ -575,7 +648,11 @@ async def fetch_page(
                     if not _cfg(config, "enable_jina_fallback", True):
                         raise
                     fallback_reason = f"{type(exc).__name__}: {exc}"
-                    jina = await _fetch_jina_reader_markdown(client, safe_url)
+                    jina = await _fetch_jina_reader_markdown(
+                        client,
+                        safe_url,
+                        allow_private_networks=_cfg(config, "allow_private_networks", False),
+                    )
                     markdown_full = jina["markdown"]
                     reader_url = jina["reader_url"]
                     backend = "jina_reader"
@@ -659,9 +736,26 @@ async def research_brief(
         }
 
     selected_results: list[dict[str, str]] = []
+    skipped_results: list[dict[str, str]] = []
     seen_domains: set[str] = set()
     for result in search.get("results", []):
-        parsed = urlparse(result.get("url", ""))
+        raw_url = result.get("url", "")
+        try:
+            safe_url = validate_fetch_url(
+                raw_url,
+                allow_private_networks=_cfg(config, "allow_private_networks", False),
+            )
+        except FetchSafetyError as exc:
+            skipped_results.append(
+                {
+                    "title": result.get("title", ""),
+                    "url": raw_url,
+                    "reason": str(exc),
+                }
+            )
+            continue
+        result = {**result, "url": safe_url}
+        parsed = urlparse(safe_url)
         domain = (parsed.hostname or "").lower()
         if _cfg(config, "dedupe_domains", True) and domain:
             if domain in seen_domains:
@@ -708,9 +802,10 @@ async def research_brief(
     return {
         "ok": True,
         "query": query,
-        "backend": "duckduckgo_html",
+        "backend": search.get("backend", "unknown"),
         "fetched_at": now_iso(),
         "sources": sources,
+        "skipped_results": skipped_results,
     }
 
 
