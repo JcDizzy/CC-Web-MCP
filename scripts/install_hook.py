@@ -74,6 +74,24 @@ def hook_matches(entry: Any, matcher: str, command: str) -> bool:
     return any(isinstance(hook, dict) and hook.get("command") == command for hook in hooks)
 
 
+def is_cc_web_guard_command(command: Any) -> bool:
+    if not isinstance(command, str):
+        return False
+    normalized = command.replace("\\", "/").lower()
+    return "cc_web_mcp/hooks/guard.py" in normalized or "/hooks/guard.py" in normalized
+
+
+def is_cc_web_guard_entry(entry: Any, matcher: str) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    if entry.get("matcher", "") != matcher:
+        return False
+    hooks = entry.get("hooks", [])
+    if not isinstance(hooks, list):
+        return False
+    return any(isinstance(hook, dict) and is_cc_web_guard_command(hook.get("command")) for hook in hooks)
+
+
 def merge_hook(data: dict[str, Any], event_name: str, matcher: str, command: str) -> bool:
     hooks = data.setdefault("hooks", {})
     if not isinstance(hooks, dict):
@@ -83,7 +101,11 @@ def merge_hook(data: dict[str, Any], event_name: str, matcher: str, command: str
     if not isinstance(entries, list):
         raise ValueError(f"settings.json hooks.{event_name} must be an array")
 
-    if any(hook_matches(entry, matcher, command) for entry in entries):
+    old_len = len(entries)
+    entries[:] = [entry for entry in entries if not is_cc_web_guard_entry(entry, matcher)]
+    removed_existing = len(entries) != old_len
+
+    if not removed_existing and any(hook_matches(entry, matcher, command) for entry in entries):
         return False
 
     entries.append(make_matcher(matcher, command))

@@ -89,3 +89,48 @@ def test_install_hook_preserves_unrelated_hooks(tmp_path):
     assert "Bash" in matchers
     assert r"^(mcp__cc[-_]web__.*|WebSearch|WebFetch)$" in matchers
 
+
+def test_install_hook_replaces_existing_cc_web_hook_when_command_changes(tmp_path):
+    settings = tmp_path / "settings.json"
+    matcher = r"^(mcp__cc[-_]web__.*|WebSearch|WebFetch)$"
+    settings.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {
+                            "matcher": "",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "py -3.11 E:/jc/cc_web_mcp/hooks/guard.py",
+                                    "timeout": 5,
+                                }
+                            ],
+                        }
+                    ],
+                    "PreToolUse": [
+                        {
+                            "matcher": matcher,
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "py -3.11 E:/jc/cc_web_mcp/hooks/guard.py",
+                                    "timeout": 5,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_install(settings, ["--python-command", "E:\\anaconda\\python.exe"])
+
+    assert result.returncode == 0, result.stderr
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    assert len(data["hooks"]["SessionStart"]) == 1
+    assert len(data["hooks"]["PreToolUse"]) == 1
+    assert data["hooks"]["PreToolUse"][0]["hooks"][0]["command"].startswith("E:\\anaconda\\python.exe ")
