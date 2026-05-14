@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import ipaddress
 import json
 import re
@@ -9,7 +10,7 @@ import socket
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import httpx
@@ -101,6 +102,43 @@ class FetchDiagnosticError(FetchSafetyError):
     def __init__(self, message: str, diagnostics: dict[str, Any]):
         super().__init__(message)
         self.diagnostics = diagnostics
+
+
+StatusCallback = Callable[[str], Awaitable[None] | None]
+
+
+class StatusRecorder:
+    def __init__(self, callback: StatusCallback | None = None):
+        self.callback = callback
+        self.steps: list[dict[str, str]] = []
+
+    async def add(self, message: str) -> None:
+        message = _clean_text(message)
+        if not message:
+            return
+        self.steps.append({"message": message, "at": now_iso()})
+        if self.callback:
+            maybe_awaitable = self.callback(message)
+            if maybe_awaitable:
+                await maybe_awaitable
+
+    def summary(self, fallback: str = "") -> str:
+        if fallback:
+            return fallback
+        if self.steps:
+            return self.steps[-1]["message"]
+        return ""
+
+
+async def _call_with_optional_status(fn: Callable[..., Any], *args: Any, status_callback: StatusCallback | None = None, **kwargs: Any) -> Any:
+    if status_callback is not None:
+        try:
+            signature = inspect.signature(fn)
+            if "status_callback" in signature.parameters:
+                kwargs["status_callback"] = status_callback
+        except (TypeError, ValueError):
+            kwargs["status_callback"] = status_callback
+    return await fn(*args, **kwargs)
 
 
 @dataclass(frozen=True)
@@ -887,14 +925,19 @@ async def search_web(
     region: str = "wt-wt",
     language: str = "zh-cn",
     config: GlobalWebConfig | None = None,
+    status_callback: StatusCallback | None = None,
 ) -> dict[str, Any]:
     config = config or load_config()
+    status = StatusRecorder(status_callback)
     query = _clean_text(query)
     if not query:
+        await status.add("cc-web: search query is empty")
         return {
             "ok": False,
             "error": "query 不能为空",
             "error_type": "invalid_query",
+            "status_summary": "search failed: empty query",
+            "steps": status.steps,
             "retryable": False,
             "do_not_retry_reason": "Empty query; do not retry until a non-empty query is provided.",
             "recommended_next_action": "Provide a concise search query.",
@@ -913,8 +956,10 @@ async def search_web(
     for provider in providers:
         backend = _provider_backend_name(provider)
         try:
+            await status.add(f"cc-web: searching {backend} for {query}")
             backend, results = await _search_with_provider(provider, query, max_results, region, language, config)
             attempted_backends.append({"backend": backend, "ok": True})
+            await status.add(f"cc-web: {backend} returned {len(results[:max_results])} results")
 
             if _cfg(config, "prefer_technical_sources", True):
                 results = rank_search_results(results)
@@ -923,6 +968,8 @@ async def search_web(
                 "ok": True,
                 "query": query,
                 "backend": backend,
+                "status_summary": f"search complete: {len(results[:max_results])} results from {backend}",
+                "steps": status.steps,
                 "fetched_at": now_iso(),
                 "results": results[:max_results],
                 "attempted_backends": attempted_backends,
@@ -935,13 +982,17 @@ async def search_web(
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
             attempted_backends.append({"backend": backend, "ok": False, "error": last_error})
+            await status.add(f"cc-web: {backend} failed, trying next backend")
             if not fallback_reason:
                 fallback_reason = f"{backend} failed: {last_error}"
 
+    await status.add("cc-web: all search backends failed")
     return {
         "ok": False,
         "query": query,
         "backend": _provider_backend_name(providers[-1]) if providers else "unknown",
+        "status_summary": "search failed: all configured backends failed",
+        "steps": status.steps,
         "fetched_at": now_iso(),
         "error": last_error or "all search providers failed",
         "fallback_reason": fallback_reason,
@@ -960,16 +1011,21 @@ async def fetch_page(
     start_index: int = 0,
     extract_mode: str = "auto",
     config: GlobalWebConfig | None = None,
+    status_callback: StatusCallback | None = None,
 ) -> dict[str, Any]:
     config = config or load_config()
+    status = StatusRecorder(status_callback)
     try:
         safe_url = await validate_fetch_url_async(url, allow_private_networks=_cfg(config, "allow_private_networks", False))
     except FetchSafetyError as exc:
+        await status.add("cc-web: fetch blocked by URL safety policy")
         result = {
             "ok": False,
             "url": url,
             "error": str(exc),
             "error_type": "fetch_safety",
+            "status_summary": "fetch failed: URL safety policy",
+            "steps": status.steps,
         }
         result.update(_fetch_failure_guidance("fetch_safety"))
         return result
@@ -982,6 +1038,7 @@ async def fetch_page(
 
     try:
         if cached:
+            await status.add(f"cc-web: cache hit for {safe_url}")
             markdown_full = str(cached.get("markdown_full", ""))
             backend = str(cached.get("backend", "direct"))
             final_url = str(cached.get("final_url", safe_url))
@@ -993,6 +1050,7 @@ async def fetch_page(
         else:
             async with httpx.AsyncClient(headers=_headers(), timeout=REQUEST_TIMEOUT, max_redirects=5) as client:
                 try:
+                    await status.add(f"cc-web: fetching {safe_url}")
                     response = await _limited_get(
                         client,
                         safe_url,
@@ -1003,6 +1061,7 @@ async def fetch_page(
                         allow_private_networks=_cfg(config, "allow_private_networks", False),
                     )
                     content_type = response.headers.get("content-type", "")
+                    await status.add(f"cc-web: extracting markdown from {safe_url}")
                     markdown_full = _format_response_content(response, extract_mode=extract_mode, config=config)
                     diagnostics = _diagnose_fetch_response(safe_url, response, markdown=markdown_full)
                     if diagnostics:
@@ -1012,6 +1071,7 @@ async def fetch_page(
 
                     if _cfg(config, "enable_jina_fallback", True) and len(markdown_full) < _cfg(config, "jina_min_chars", 300):
                         fallback_reason = f"direct content too short: {len(markdown_full)} chars"
+                        await status.add("cc-web: direct content too short, trying Jina Reader")
                         jina = await _fetch_jina_reader_markdown(
                             client,
                             safe_url,
@@ -1025,6 +1085,7 @@ async def fetch_page(
                         raise
                     primary_diagnostics = _diagnose_fetch_exception(safe_url, exc)
                     fallback_reason = f"{type(exc).__name__}: {exc}"
+                    await status.add("cc-web: direct fetch failed, trying Jina Reader")
                     try:
                         jina = await _fetch_jina_reader_markdown(
                             client,
@@ -1066,6 +1127,8 @@ async def fetch_page(
             "url": safe_url,
             "final_url": final_url,
             "backend": backend,
+            "status_summary": f"fetch complete: {backend}, {window['content_length']} chars",
+            "steps": status.steps,
             "status_code": status_code,
             "content_type": content_type,
             "fetched_at": now_iso(),
@@ -1093,6 +1156,8 @@ async def fetch_page(
             "fetched_at": now_iso(),
             "error": f"{type(exc).__name__}: {exc}",
             "error_type": error_type,
+            "status_summary": f"fetch failed: {error_type}",
+            "steps": status.steps,
         }
         if diagnostics:
             result["fetch_diagnostics"] = diagnostics
@@ -1107,25 +1172,31 @@ async def research_brief(
     region: str = "wt-wt",
     language: str = "zh-cn",
     config: GlobalWebConfig | None = None,
+    status_callback: StatusCallback | None = None,
 ) -> dict[str, Any]:
     config = config or load_config()
+    status = StatusRecorder(status_callback)
     max_sources = max(1, min(int(max_sources or _cfg(config, "max_brief_sources", 3)), _cfg(config, "max_brief_sources", 3)))
     max_chars_per_source = max(
         1,
         min(int(max_chars_per_source or _cfg(config, "brief_chars_per_source", 2_500)), _cfg(config, "max_fetch_chars", 60_000)),
     )
 
-    search = await search_web(
+    search = await _call_with_optional_status(
+        search_web,
         query,
         max_results=max(_cfg(config, "max_search_results", 10), max_sources),
         region=region,
         language=language,
         config=config,
+        status_callback=status.add,
     )
     if not search.get("ok"):
         return {
             "ok": False,
             "query": query,
+            "status_summary": "research brief failed: search failed",
+            "steps": status.steps,
             "fetched_at": now_iso(),
             "search": search,
             "sources": [],
@@ -1163,14 +1234,17 @@ async def research_brief(
 
     semaphore = asyncio.Semaphore(_cfg(config, "brief_concurrency", 3))
 
-    async def fetch_source(result: dict[str, str]) -> dict[str, Any]:
+    async def fetch_source(index: int, result: dict[str, str]) -> dict[str, Any]:
         async with semaphore:
-            fetched = await fetch_page(
+            await status.add(f"cc-web: fetching {index}/{len(selected_results)} {result.get('url', '')}")
+            fetched = await _call_with_optional_status(
+                fetch_page,
                 result.get("url", ""),
                 max_chars=max_chars_per_source,
                 start_index=0,
                 extract_mode="auto",
                 config=config,
+                status_callback=status.add,
             )
             source: dict[str, Any] = {
                 "title": result.get("title", ""),
@@ -1202,12 +1276,14 @@ async def research_brief(
                         source[key] = fetched[key]
             return source
 
-    sources = await asyncio.gather(*(fetch_source(result) for result in selected_results))
+    sources = await asyncio.gather(*(fetch_source(index, result) for index, result in enumerate(selected_results, start=1)))
 
     return {
         "ok": True,
         "query": query,
         "backend": search.get("backend", "unknown"),
+        "status_summary": f"research brief complete: {len(sources)} sources from {search.get('backend', 'unknown')}",
+        "steps": status.steps,
         "fetched_at": now_iso(),
         "sources": sources,
         "skipped_results": skipped_results,

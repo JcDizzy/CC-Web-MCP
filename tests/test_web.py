@@ -207,6 +207,57 @@ def test_search_web_falls_back_to_bing_cn_when_duckduckgo_fails(monkeypatch):
     assert result["results"][0]["url"] == "https://github.com/modelcontextprotocol/servers"
 
 
+def test_search_web_records_status_steps_and_callback(monkeypatch):
+    class Config:
+        search_provider = "duckduckgo"
+        search_providers = ("duckduckgo", "bing_cn")
+        searxng_base_url = ""
+        max_search_results = 10
+        prefer_technical_sources = False
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, params=None, follow_redirects=True):
+            if "duckduckgo.com" in url:
+                raise httpx.ConnectError("blocked", request=httpx.Request("GET", url))
+            return httpx.Response(
+                200,
+                text="""
+                <html><body>
+                  <li class="b_algo">
+                    <h2><a href="https://example.com/doc">Example Doc</a></h2>
+                    <div class="b_caption"><p>Example snippet.</p></div>
+                  </li>
+                </body></html>
+                """,
+                request=httpx.Request("GET", url),
+            )
+
+    messages = []
+
+    async def status_callback(message):
+        messages.append(message)
+
+    monkeypatch.setattr(web.httpx, "AsyncClient", FakeClient)
+
+    result = asyncio.run(web.search_web("mcp docs", max_results=2, config=Config(), status_callback=status_callback))
+
+    assert result["ok"] is True
+    assert result["backend"] == "bing_cn"
+    assert "bing_cn" in result["status_summary"]
+    assert [step["message"] for step in result["steps"]] == messages
+    assert any("duckduckgo_html" in message for message in messages)
+    assert any("bing_cn" in message for message in messages)
+
+
 def test_search_web_all_provider_failure_guides_model_away_from_immediate_retry(monkeypatch):
     class Config:
         search_provider = "duckduckgo"
@@ -489,6 +540,40 @@ def test_fetch_page_returns_continuation_guidance_for_truncated_content(monkeypa
     assert result["truncation"]["next_call"]["tool"] == "fetch_url"
     assert result["truncation"]["next_call"]["start_index"] == 4
     assert "Do not repeat" in result["truncation"]["do_not_retry_reason"]
+
+
+def test_fetch_page_records_status_steps_and_callback(monkeypatch, public_dns):
+    class Config:
+        default_fetch_chars = 1000
+        max_fetch_chars = 60000
+        enable_jina_fallback = False
+        jina_min_chars = 300
+        allow_private_networks = False
+        cache_ttl_seconds = 0
+
+    async def fake_limited_get(client, url, allow_private_networks=False):
+        return httpx.Response(
+            200,
+            content=b"<html><body><main><p>Hello status</p></main></body></html>",
+            headers={"content-type": "text/html"},
+            request=httpx.Request("GET", url),
+        )
+
+    messages = []
+
+    async def status_callback(message):
+        messages.append(message)
+
+    monkeypatch.setattr(web, "_limited_get", fake_limited_get)
+
+    result = asyncio.run(web.fetch_page("https://example.com/doc", max_chars=50, config=Config(), status_callback=status_callback))
+
+    assert result["ok"] is True
+    assert result["backend"] == "direct"
+    assert "direct" in result["status_summary"]
+    assert [step["message"] for step in result["steps"]] == messages
+    assert any("fetching" in message for message in messages)
+    assert any("extracting" in message for message in messages)
 
 
 def test_fetch_page_formats_json_content(monkeypatch, public_dns):
@@ -933,6 +1018,63 @@ def test_research_brief_returns_compact_sources(monkeypatch, public_dns):
     assert result["sources"][0]["markdown"] == "x" * 20
     assert result["sources"][0]["truncated"] is True
     assert result["sources"][0]["truncation"]["next_call"]["start_index"] == 20
+
+
+def test_research_brief_records_status_steps_and_callback(monkeypatch, public_dns):
+    class Config:
+        max_brief_sources = 2
+        brief_chars_per_source = 20
+        max_fetch_chars = 60000
+        brief_concurrency = 1
+        dedupe_domains = False
+        allow_private_networks = False
+        max_search_results = 10
+
+    async def fake_search_web(query, max_results=5, region="wt-wt", language="zh-cn", config=None, status_callback=None):
+        if status_callback:
+            await status_callback("cc-web: searching via fake")
+        return {
+            "ok": True,
+            "query": query,
+            "backend": "fake",
+            "results": [
+                {"title": "Doc A", "url": "https://example.com/a", "snippet": "A snippet"},
+                {"title": "Doc B", "url": "https://example.org/b", "snippet": "B snippet"},
+            ],
+        }
+
+    async def fake_fetch_page(url, max_chars=None, start_index=0, extract_mode="auto", config=None, status_callback=None):
+        if status_callback:
+            await status_callback(f"cc-web: fetching {url}")
+        return {
+            "ok": True,
+            "url": url,
+            "final_url": url,
+            "backend": "direct",
+            "markdown": url,
+            "content_length": len(url),
+            "truncated": False,
+            "next_start_index": None,
+        }
+
+    messages = []
+
+    async def status_callback(message):
+        messages.append(message)
+
+    monkeypatch.setattr(web, "search_web", fake_search_web)
+    monkeypatch.setattr(web, "fetch_page", fake_fetch_page)
+
+    result = asyncio.run(
+        web.research_brief("docs", max_sources=2, max_chars_per_source=20, config=Config(), status_callback=status_callback)
+    )
+
+    assert result["ok"] is True
+    assert result["status_summary"] == "research brief complete: 2 sources from fake"
+    assert [step["message"] for step in result["steps"]] == messages
+    assert messages[0] == "cc-web: searching via fake"
+    assert any("fetching 1/2" in message for message in messages)
+    assert any("fetching https://example.com/a" in message for message in messages)
 
 
 def test_research_brief_filters_invalid_urls_before_fetch(monkeypatch, public_dns):

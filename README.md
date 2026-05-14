@@ -306,6 +306,15 @@ py -3.11 -m pytest .\tests -q
 
 `fetch_url` 返回内容被截断时，除了 `next_start_index`，还会返回 `truncation.next_call`。模型可以用里面的 `url`、`max_chars`、`start_index` 和 `extract_mode` 继续读取下一段，而不是重复读取同一段。
 
+### 状态显示
+
+`web_search`、`fetch_url` 和 `research_brief` 会在执行时向 Claude Code 发送 MCP progress/log 状态，例如正在搜索哪个后端、正在抓取哪个 URL、是否进入 Jina Reader fallback。Claude Code 是否把这些状态显示在 `Called cc-web ...` 折叠行附近，取决于当前 Claude Code 版本的 MCP 进度渲染；不改 Claude Code 源码时，cc-web 不能强制改写那一行 UI。
+
+为了保证状态始终可见，工具返回 JSON 里也会包含：
+
+- `status_summary`：一句话概括本次调用做了什么。
+- `steps`：简短步骤列表，只记录搜索后端、抓取来源、fallback 等状态，不记录正文内容。
+
 ### 反爬、登录墙和超时
 
 `fetch_url` 不会尝试绕过验证码、登录墙或 WAF。遇到知乎、微信公众号、X、Reddit 等强反爬或强登录站点时，轻量 HTTP 抓取可能返回 `403`、安全验证页、空正文或 `ReadTimeout`。
@@ -344,6 +353,7 @@ py -3.11 -m pip install -r requirements-optional.txt
 - 反爬诊断：`fetch_url` 会对 `403/429`、验证页、登录页、JS 依赖页和已知强反爬域名超时返回结构化 `fetch_diagnostics`，`research_brief` 会透传失败来源的诊断信息。
 - 模型友好的失败提示：失败返回包含 `retryable`、`do_not_retry_reason` 和 `recommended_next_action`，减少重复调用和无效重试。
 - 截断续读提示：`fetch_url` 截断时返回 `truncation.next_call`，方便模型按下一段继续读取。
+- 状态显示：MCP 工具执行中会发送 progress/log 状态，返回 JSON 也会包含 `status_summary` 和 `steps`。
 - 本地诊断脚本：`scripts/doctor.py` 可检查配置文件、Claude Code 指令、hook 守卫和搜索后端连通性是否就位。
 - 技术资料源轻量加权：默认小幅优先 GitHub、官方文档、包管理站点、Read the Docs、Stack Overflow 等技术来源，但不完全覆盖搜索后端原始排序。
 - 缓存和重复抓取控制：默认开启公开 URL 抓取缓存，TTL 由 `cache_ttl_seconds` 控制，缓存 key 包含 schema version。
