@@ -1,12 +1,11 @@
 import asyncio
-import inspect
 from pathlib import Path
 
 import httpx
 import pytest
 
 import web
-from web import FetchSafetyError, extract_markdown, is_deepseek_model, normalize_search_results, validate_fetch_url
+from web import FetchSafetyError, extract_markdown, normalize_search_results, validate_fetch_url
 
 
 @pytest.fixture
@@ -310,6 +309,9 @@ def test_validate_fetch_url_blocks_private_networks_by_default():
         "http://255.255.255.255/admin",
         "http://[::]/admin",
         "http://[::1]/admin",
+        "http://[::ffff:127.0.0.1]/admin",
+        "http://[::ffff:10.0.0.1]/admin",
+        "http://[::ffff:169.254.169.254]/latest/meta-data",
         "http://[fc00::1]/admin",
         "http://[fe80::1]/admin",
     ]
@@ -400,13 +402,6 @@ def test_limited_get_blocks_redirect_to_private_network():
         asyncio.run(run())
 
 
-def test_is_deepseek_model_matches_known_names():
-    assert is_deepseek_model("deepseek-v4-flash")
-    assert is_deepseek_model("DeepSeek-V4-Pro[1m]")
-    assert not is_deepseek_model("claude-opus-4-6")
-    assert not is_deepseek_model("")
-
-
 def test_fetch_page_returns_paginated_window_metadata(monkeypatch, public_dns):
     class Config:
         default_fetch_chars = 1000
@@ -414,7 +409,7 @@ def test_fetch_page_returns_paginated_window_metadata(monkeypatch, public_dns):
         enable_jina_fallback = False
         jina_min_chars = 300
 
-    async def fake_limited_get(client, url):
+    async def fake_limited_get(client, url, allow_private_networks=False):
         return httpx.Response(
             200,
             content=b"<html><body><main><p>abcdefghij</p></main></body></html>",
@@ -548,6 +543,50 @@ def test_fetch_page_uses_public_url_cache(monkeypatch, tmp_path, public_dns):
     assert calls == 1
 
 
+def test_fetch_page_does_not_cache_jina_fallback_under_direct_url(monkeypatch, tmp_path, public_dns):
+    class Config:
+        default_fetch_chars = 1000
+        max_fetch_chars = 60000
+        enable_jina_fallback = True
+        jina_min_chars = 200
+        cache_ttl_seconds = 3600
+        allow_private_networks = False
+        cache_dir = str(tmp_path / "cache")
+
+    direct_calls = 0
+    jina_calls = 0
+
+    async def short_limited_get(client, url, allow_private_networks=False):
+        nonlocal direct_calls
+        direct_calls += 1
+        return httpx.Response(
+            200,
+            content=b"<html><body><main><p>short</p></main></body></html>",
+            headers={"content-type": "text/html"},
+            request=httpx.Request("GET", url),
+        )
+
+    async def fake_jina_reader(client, url):
+        nonlocal jina_calls
+        jina_calls += 1
+        return {
+            "markdown": "Jina fallback markdown",
+            "reader_url": "https://r.jina.ai/https://example.com/short",
+        }
+
+    monkeypatch.setattr(web, "_limited_get", short_limited_get)
+    monkeypatch.setattr(web, "_fetch_jina_reader_markdown", fake_jina_reader, raising=False)
+
+    first = asyncio.run(web.fetch_page("https://example.com/short", max_chars=1000, config=Config()))
+    second = asyncio.run(web.fetch_page("https://example.com/short", max_chars=1000, config=Config()))
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert direct_calls == 2
+    assert jina_calls == 2
+    assert second["cache"] == "miss"
+
+
 def test_cache_key_includes_schema_version():
     key_v1 = web._cache_key("https://example.com", "auto", schema_version=1)
     key_v2 = web._cache_key("https://example.com", "auto", schema_version=2)
@@ -597,10 +636,6 @@ def test_jina_reader_revalidates_url_and_blocks_private_networks(monkeypatch):
         asyncio.run(run())
 
 
-def test_jina_reader_has_no_private_network_override_parameter():
-    assert "allow_private_networks" not in inspect.signature(web._fetch_jina_reader_markdown).parameters
-
-
 def test_jina_reader_still_blocks_private_networks_when_config_allows_them(monkeypatch):
     monkeypatch.setattr(web.socket, "getaddrinfo", lambda *args, **kwargs: [(None, None, None, None, ("127.0.0.1", 443))])
 
@@ -642,6 +677,29 @@ def test_diagnose_fetch_response_handles_unread_streaming_error_response():
     assert diagnostics["type"] == "blocked_or_waf"
     assert diagnostics["confidence"] == "high"
     assert "status_code=403" in diagnostics["signals"]
+
+
+def test_limited_get_preserves_error_body_for_diagnostics(public_dns):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            content="<html><head><title>安全验证 - 知乎</title></head><body>请完成验证</body></html>".encode("utf-8"),
+            headers={"content-type": "text/html"},
+            request=request,
+        )
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            try:
+                await web._limited_get(client, "https://www.zhihu.com/question/19550256", allow_private_networks=False)
+            except httpx.HTTPStatusError as exc:
+                return web._diagnose_fetch_exception("https://www.zhihu.com/question/19550256", exc)
+        raise AssertionError("expected HTTPStatusError")
+
+    diagnostics = asyncio.run(run())
+
+    assert diagnostics["type"] == "captcha_or_challenge"
+    assert any("安全验证" in signal for signal in diagnostics["signals"])
 
 
 def test_fetch_page_returns_anti_bot_diagnostics_when_direct_fetch_is_blocked(monkeypatch, public_dns):

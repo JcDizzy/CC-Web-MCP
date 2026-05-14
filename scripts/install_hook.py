@@ -105,7 +105,7 @@ def is_cc_web_guard_command(command: Any) -> bool:
     if not isinstance(command, str):
         return False
     normalized = command.replace("\\", "/").lower()
-    return "cc_web_mcp/hooks/guard.py" in normalized or "/hooks/guard.py" in normalized
+    return "cc_web_mcp/hooks/guard.py" in normalized or "cc-web-mcp/hooks/guard.py" in normalized
 
 
 def is_cc_web_guard_entry(entry: Any, matcher: str) -> bool:

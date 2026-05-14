@@ -5,7 +5,6 @@ import hashlib
 import ipaddress
 import json
 import re
-import inspect
 import socket
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -27,7 +26,7 @@ MAX_DOWNLOAD_BYTES = 5_000_000
 REQUEST_TIMEOUT = httpx.Timeout(15.0, connect=8.0, read=15.0)
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.json")
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "cc-web-mcp"
-CACHE_SCHEMA_VERSION = 2
+CACHE_SCHEMA_VERSION = 3
 BING_CN_SCOPE_NOTE = "bing_cn may be region-biased and is used as fallback; it is not equivalent to full global search."
 ANTI_BOT_DOMAINS = (
     "zhihu.com",
@@ -238,10 +237,6 @@ def config_to_dict(config: GlobalWebConfig) -> dict[str, Any]:
     }
 
 
-def is_deepseek_model(model: str | None) -> bool:
-    return "deepseek" in (model or "").lower()
-
-
 def model_matches_patterns(model: str | None, patterns: tuple[str, ...] | list[str] | None) -> bool:
     normalized = (model or "").lower()
     return any(pattern and pattern.lower() in normalized for pattern in (patterns or ()))
@@ -259,6 +254,8 @@ def _is_private_host(host: str) -> bool:
         return True
     try:
         ip = ipaddress.ip_address(normalized)
+        if getattr(ip, "ipv4_mapped", None) is not None:
+            ip = ip.ipv4_mapped
         return any(ip in network for network in BLOCKED_IP_NETWORKS)
     except ValueError:
         return False
@@ -468,6 +465,7 @@ def _provider_backend_name(provider: str) -> str:
 
 
 def _search_backend_health_url(provider: str, config: GlobalWebConfig | Any) -> tuple[str, str]:
+    """Return the normalized backend name and a lightweight health-check URL."""
     provider = _normalize_search_provider_name(provider)
     if provider == "searxng":
         base_url = _cfg(config, "searxng_base_url", "").rstrip("/")
@@ -608,7 +606,7 @@ def _diagnose_fetch_response(requested_url: str, response: httpx.Response, markd
     status_code = response.status_code
     text_sample = _safe_response_text(response)
     title = _extract_html_title(text_sample)
-    haystack = " ".join([final_url, title, text_sample[:3000], markdown[:1000]]).lower()
+    haystack = " ".join([requested_url, final_url, title, text_sample[:3000], markdown[:1000]]).lower()
     signals: list[str] = []
 
     if status_code in {401, 403, 429, 503}:
@@ -714,7 +712,6 @@ async def _limited_get(
                 )
                 continue
 
-            response.raise_for_status()
             chunks: list[bytes] = []
             total = 0
             async for chunk in response.aiter_bytes():
@@ -722,13 +719,15 @@ async def _limited_get(
                 if total > MAX_DOWNLOAD_BYTES:
                     raise FetchSafetyError("页面过大，已停止下载")
                 chunks.append(chunk)
-            return httpx.Response(
+            full_response = httpx.Response(
                 status_code=response.status_code,
                 headers=response.headers,
                 content=b"".join(chunks),
                 request=response.request,
                 extensions=response.extensions,
             )
+            full_response.raise_for_status()
+            return full_response
     raise FetchSafetyError("重定向次数过多，已停止抓取")
 
 
@@ -742,17 +741,6 @@ async def _fetch_jina_reader_markdown(
     response = await client.get(reader_url, follow_redirects=True)
     response.raise_for_status()
     return {"markdown": _clean_multiline(response.text), "reader_url": str(response.url)}
-
-
-async def _call_limited_get(
-    client: httpx.AsyncClient,
-    url: str,
-    allow_private_networks: bool,
-) -> httpx.Response:
-    signature = inspect.signature(_limited_get)
-    if "allow_private_networks" in signature.parameters:
-        return await _limited_get(client, url, allow_private_networks=allow_private_networks)
-    return await _limited_get(client, url)
 
 
 def _extract_pdf_text(content: bytes) -> str:
@@ -937,7 +925,7 @@ async def fetch_page(
         else:
             async with httpx.AsyncClient(headers=_headers(), timeout=REQUEST_TIMEOUT, max_redirects=5) as client:
                 try:
-                    response = await _call_limited_get(
+                    response = await _limited_get(
                         client,
                         safe_url,
                         allow_private_networks=_cfg(config, "allow_private_networks", False),
@@ -989,19 +977,20 @@ async def fetch_page(
                     status_code = None
                     content_type = "text/markdown"
             cache_state = "miss"
-            _write_cache(
-                config,
-                cache_key,
-                {
-                    "markdown_full": markdown_full,
-                    "backend": backend,
-                    "final_url": final_url,
-                    "status_code": status_code,
-                    "content_type": content_type,
-                    "reader_url": reader_url,
-                    "fallback_reason": fallback_reason,
-                },
-            )
+            if backend != "jina_reader":
+                _write_cache(
+                    config,
+                    cache_key,
+                    {
+                        "markdown_full": markdown_full,
+                        "backend": backend,
+                        "final_url": final_url,
+                        "status_code": status_code,
+                        "content_type": content_type,
+                        "reader_url": reader_url,
+                        "fallback_reason": fallback_reason,
+                    },
+                )
 
         window = slice_text_window(markdown_full, max_chars=max_chars, start_index=start_index)
         result = {

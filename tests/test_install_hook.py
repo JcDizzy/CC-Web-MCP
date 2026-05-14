@@ -90,6 +90,37 @@ def test_install_hook_preserves_unrelated_hooks(tmp_path):
     assert r"^(mcp__cc[-_]web__.*|WebFetch)$" in matchers
 
 
+def test_install_hook_preserves_unrelated_guard_with_same_matcher(tmp_path):
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": r"^(mcp__cc[-_]web__.*|WebFetch)$",
+                            "hooks": [{"type": "command", "command": "py -3.11 D:/other_project/hooks/guard.py"}],
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_install(settings)
+
+    assert result.returncode == 0, result.stderr
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    commands = [
+        hook["command"]
+        for entry in data["hooks"]["PreToolUse"]
+        for hook in entry.get("hooks", [])
+    ]
+    assert "py -3.11 D:/other_project/hooks/guard.py" in commands
+    assert any("cc_web_mcp/hooks/guard.py" in command.replace("\\", "/") for command in commands)
+
+
 def test_install_hook_replaces_existing_cc_web_hook_when_command_changes(tmp_path):
     settings = tmp_path / "settings.json"
     matcher = r"^(mcp__cc[-_]web__.*|WebSearch|WebFetch)$"

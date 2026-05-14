@@ -3,4 +3,3 @@ httpx
 beautifulsoup4
 lxml
 markdownify
-pytest
