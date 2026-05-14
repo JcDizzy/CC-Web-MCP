@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import shlex
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -46,9 +48,31 @@ def backup_settings(path: Path) -> Path | None:
     return backup_path
 
 
+def _shell_path(value: str | Path) -> str:
+    return str(value).replace("\\", "/")
+
+
+def _quote_shell(value: str) -> str:
+    normalized = _shell_path(value).strip()
+    if not normalized:
+        return '""'
+    return shlex.quote(normalized)
+
+
+def _is_windows_executable_path(command: str) -> bool:
+    return bool(re.match(r"^[A-Za-z]:[\\/]", command.strip()))
+
+
+def _format_python_command(python_command: str) -> str:
+    command = (python_command or "").strip() or "py -3.11"
+    if _is_windows_executable_path(command):
+        return _quote_shell(command)
+    return command.replace("\\", "/")
+
+
 def build_hook_command(python_command: str, guard_path: Path) -> str:
-    guard = guard_path.resolve().as_posix()
-    return f"{python_command} {guard}"
+    guard = _quote_shell(guard_path.resolve().as_posix())
+    return f"{_format_python_command(python_command)} {guard}"
 
 
 def make_command_hook(command: str) -> dict[str, Any]:

@@ -70,6 +70,8 @@ py -3.11 .\scripts\install_hook.py
 
 这个脚本会合并更新用户级 `~\.claude\settings.json`，并在写入前创建 `settings.json.cc-web-backup.<时间戳>` 备份。它可以重复运行，不会重复添加同一条 hook。
 
+Claude Code 可能用 bash 执行 hook，即使你平时在 Windows PowerShell 里使用 Claude Code。安装脚本会把 hook command 里的 Windows 路径自动归一化为 bash 友好的正斜杠形式，并给含空格的路径加 shell 引号，避免出现 `E:anacondapython.exe: command not found` 这类错误。
+
 7. 在 Claude Code 中调用 `health_check`，确认依赖和网络连通性。
 
 如需限制只有 DeepSeek 等第三方模型能调用本 MCP，请保留启动指令和 hook 守卫，并在 `config.json` 的 `allowed_model_patterns` 中维护允许模型。
@@ -154,7 +156,7 @@ py -3.11 .\scripts\install_hook.py
         "hooks": [
           {
             "type": "command",
-            "command": "py -3.11 .\\hooks\\guard.py",
+            "command": "py -3.11 ./hooks/guard.py",
             "timeout": 5
           }
         ]
@@ -166,7 +168,7 @@ py -3.11 .\scripts\install_hook.py
         "hooks": [
           {
             "type": "command",
-            "command": "py -3.11 .\\hooks\\guard.py",
+            "command": "py -3.11 ./hooks/guard.py",
             "timeout": 5
           }
         ]
@@ -176,7 +178,7 @@ py -3.11 .\scripts\install_hook.py
 }
 ```
 
-推荐直接运行 `py -3.11 .\scripts\install_hook.py` 自动写入。上面的 JSON 主要用于手动检查或迁移到项目级 settings。
+推荐直接运行 `py -3.11 .\scripts\install_hook.py` 自动写入。上面的 JSON 主要用于手动检查或迁移到项目级 settings。手动配置时请使用正斜杠路径；不要把 `E:\anaconda\python.exe` 这类反斜杠 Windows 路径直接写进 hook command。
 
 这样会形成双层路由：`CLAUDE.md` 负责在模型发起请求前预防 `WebSearch`；hook 负责在本地执行层拦截 `WebFetch` 和 cc-web 误用。官方 Claude 默认走原生 `WebSearch/WebFetch`；DeepSeek、Qwen、Kimi 等匹配模型默认走 `cc-web`。
 
