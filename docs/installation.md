@@ -13,10 +13,10 @@ uvx cc-web-mcp init --runner uvx
 uvx cc-web-mcp doctor
 ```
 
-`--runner uvx` 很重要：它会把 Claude Code MCP 注册成稳定的 `uvx --from cc-web-mcp==<当前版本> cc-web-mcp` 形态，避免把 uvx 临时缓存目录里的 `python.exe` 写进长期配置。
+`--runner uvx` 很重要：它会把 Claude Code MCP server 注册成稳定的 `uvx cc-web-mcp@<当前版本>` 形态，避免把 uvx 临时缓存目录里的 `python.exe` 写进长期配置。hook 守卫会单独写成 exec form：`command` 为 `uvx` / `uvx.exe`，`args` 为 `["--from", "cc-web-mcp@<当前版本>", "cc-web-mcp", "hook-guard"]`。
 如果之前已经用普通 `pip`、editable install 或旧的 uv 缓存路径初始化过，切换到 `uvx` 后请重新运行 `uvx cc-web-mcp init --runner uvx --force`，刷新 Claude Code 里保存的 MCP 命令路径。
 
-如果需要 PDF 提取能力，初始化时加 `--with-pdf`，Claude Code 保存的命令会使用 `cc-web-mcp[pdf]==<当前版本>`：
+如果需要 PDF 提取能力，初始化时加 `--with-pdf`，Claude Code 保存的命令会使用 `cc-web-mcp[pdf]@<当前版本>`：
 
 ```powershell
 uvx cc-web-mcp init --runner uvx --with-pdf --force
@@ -71,7 +71,7 @@ cc-web-mcp init
 这个命令会完成四件事：
 
 - 创建用户配置文件。
-- 注册 Claude Code 用户级 stdio MCP。普通 Python 安装会注册为当前 Python 的 `-m cc_web_mcp`；`--runner uvx` 会注册为 `uvx --from cc-web-mcp==<当前版本> cc-web-mcp`。
+- 注册 Claude Code 用户级 stdio MCP。普通 Python 安装会注册为当前 Python 的 `-m cc_web_mcp`；`--runner uvx` 会注册为 `uvx cc-web-mcp@<当前版本>`。
 - 写入用户级 `~\.claude\CLAUDE.md` 路由提示。
 - 合并更新用户级 `~\.claude\settings.json` hook 守卫，并在写入前备份。
 

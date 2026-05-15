@@ -57,7 +57,7 @@ cc-web 的默认策略是：
 uvx cc-web-mcp init --runner uvx
 ```
 
-如果手动配置 hook，推荐参考初始化命令自动写入的 exec form：`command` 为 `uvx`，`args` 为 `["--from", "cc-web-mcp==<当前版本>", "cc-web-mcp", "hook-guard"]`。只有在 `cc-web-mcp` 已经通过 `pipx` 或 PATH 可见的本地安装方式可直接运行时，才使用示例里的 `cc-web-mcp hook-guard` console script；这样可以避免把具体仓库路径或 Python 解释器路径写死在 `settings.json` 里。
+如果手动配置 hook，推荐参考初始化命令自动写入的 exec form：`command` 为 `uvx`，`args` 为 `["--from", "cc-web-mcp@<当前版本>", "cc-web-mcp", "hook-guard"]`。只有在 `cc-web-mcp` 已经通过 `pipx` 或 PATH 可见的本地安装方式可直接运行时，才使用示例里的 `cc-web-mcp hook-guard` console script；这样可以避免把具体仓库路径或 Python 解释器路径写死在 `settings.json` 里。
 
 这样会形成双层路由：`CLAUDE.md` 负责在模型发起请求前预防 `WebSearch`；hook 负责在本地执行层拦截 `WebFetch` 和 cc-web 误用。官方 Claude 默认走原生 `WebSearch/WebFetch`；DeepSeek、Qwen、Kimi 等匹配模型默认走 `cc-web`。
 

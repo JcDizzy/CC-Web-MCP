@@ -64,6 +64,7 @@ def test_wheel_metadata_has_pypi_project_details(wheel_metadata):
     assert metadata["Keywords"] == "claude-code,mcp,web-search,web-fetch,deepseek"
     assert "Programming Language :: Python :: 3.11" in classifiers
     assert "Programming Language :: Python :: 3.12" in classifiers
+    assert "Programming Language :: Python :: 3.13" in classifiers
     assert "Homepage, https://github.com/JcDizzy/CC-Web-MCP" in urls
     assert "Repository, https://github.com/JcDizzy/CC-Web-MCP" in urls
     assert "Issues, https://github.com/JcDizzy/CC-Web-MCP/issues" in urls

@@ -98,15 +98,20 @@ def resolve_uvx_command() -> str:
 
 def build_uvx_tool_command(uvx_package: str = "cc-web-mcp") -> list[str]:
     package = (uvx_package or "").strip() or "cc-web-mcp"
+    return [resolve_uvx_command(), package]
+
+
+def build_uvx_command_from_package(uvx_package: str = "cc-web-mcp") -> list[str]:
+    package = (uvx_package or "").strip() or "cc-web-mcp"
     return [resolve_uvx_command(), "--from", package, "cc-web-mcp"]
 
 
 def resolve_uvx_package(uvx_package: str = "cc-web-mcp", with_pdf: bool = False) -> str:
     package = (uvx_package or "").strip() or "cc-web-mcp"
     if with_pdf and package == "cc-web-mcp":
-        return f"cc-web-mcp[pdf]=={__version__}"
+        return f"cc-web-mcp[pdf]@{__version__}"
     if package == "cc-web-mcp":
-        return f"cc-web-mcp=={__version__}"
+        return f"cc-web-mcp@{__version__}"
     return package
 
 
@@ -116,7 +121,7 @@ def build_guard_command(python_command: str | None = None) -> str:
 
 
 def build_uvx_guard_command_parts(uvx_package: str = "cc-web-mcp") -> list[str]:
-    return [*build_uvx_tool_command(uvx_package), "hook-guard"]
+    return [*build_uvx_command_from_package(uvx_package), "hook-guard"]
 
 
 def build_uvx_guard_command(uvx_package: str = "cc-web-mcp") -> str:
@@ -357,8 +362,6 @@ def build_claude_mcp_add_command(
     uvx_package: str = "cc-web-mcp",
 ) -> list[str]:
     command = list(server_command or build_server_command(runner=runner, uvx_package=uvx_package))
-    if runner == "uvx" and command:
-        command = [command[0], "--", *command[1:]]
     return [
         resolve_claude_command(),
         "mcp",

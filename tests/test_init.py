@@ -70,7 +70,7 @@ def test_init_uvx_runner_registers_persistent_uvx_command(tmp_path, monkeypatch)
         runner="uvx",
     )
 
-    package = f"cc-web-mcp=={install.__version__}"
+    package = f"cc-web-mcp@{install.__version__}"
     assert calls[0][1:] == [
         "mcp",
         "add",
@@ -81,10 +81,7 @@ def test_init_uvx_runner_registers_persistent_uvx_command(tmp_path, monkeypatch)
         "cc-web",
         "--",
         "uvx",
-        "--",
-        "--from",
         package,
-        "cc-web-mcp",
     ]
     settings = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
     hook = settings["hooks"]["PreToolUse"][0]["hooks"][0]
@@ -117,7 +114,7 @@ def test_init_uvx_runner_supports_custom_package_spec(tmp_path, monkeypatch):
         uvx_package="cc-web-mcp==0.1.0",
     )
 
-    assert calls[0][-5:] == ["uvx.exe", "--", "--from", "cc-web-mcp==0.1.0", "cc-web-mcp"]
+    assert calls[0][-2:] == ["uvx.exe", "cc-web-mcp==0.1.0"]
     settings = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
     hook = settings["hooks"]["SessionStart"][0]["hooks"][0]
     assert hook["command"] == "uvx.exe"
@@ -149,8 +146,8 @@ def test_init_uvx_runner_with_pdf_registers_pdf_extra(tmp_path, monkeypatch):
         with_pdf=True,
     )
 
-    package = f"cc-web-mcp[pdf]=={install.__version__}"
-    assert calls[0][-5:] == ["uvx", "--", "--from", package, "cc-web-mcp"]
+    package = f"cc-web-mcp[pdf]@{install.__version__}"
+    assert calls[0][-2:] == ["uvx", package]
     settings = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
     hook = settings["hooks"]["PreToolUse"][0]["hooks"][0]
     assert hook["command"] == "uvx"
@@ -179,7 +176,7 @@ def test_init_uvx_runner_dry_run_shows_uvx_registration(tmp_path, monkeypatch):
     )
 
     assert summary["mcp_registration_command"].endswith(
-        f"cc-web -- uvx -- --from cc-web-mcp=={install.__version__} cc-web-mcp"
+        f"cc-web -- uvx cc-web-mcp@{install.__version__}"
     )
     assert not (tmp_path / "settings.json").exists()
 
@@ -247,7 +244,7 @@ def test_force_register_claude_mcp_removes_existing_server_before_add(monkeypatc
     assert registered is True
     assert calls[0] == ["claude", "mcp", "remove", "cc-web", "--scope", "user"]
     assert calls[1] == command
-    assert command[-5:] == ["uvx", "--", "--from", "cc-web-mcp==0.1.2", "cc-web-mcp"]
+    assert command[-2:] == ["uvx", "cc-web-mcp==0.1.2"]
     assert stdout == "ok"
     assert stderr == ""
 

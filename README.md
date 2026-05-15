@@ -22,7 +22,7 @@ uvx cc-web-mcp init --runner uvx
 uvx cc-web-mcp doctor
 ```
 
-`--runner uvx` 是推荐写法：它会让 Claude Code 的 MCP 配置长期指向稳定的 `uvx --from cc-web-mcp==<当前版本> cc-web-mcp` 形态，而不是某个临时缓存目录或本地开发环境里的 Python。
+`--runner uvx` 是推荐写法：它会让 Claude Code 的 MCP server 配置长期指向稳定的 `uvx cc-web-mcp@<当前版本>`，而不是某个临时缓存目录或本地开发环境里的 Python。hook 守卫会单独使用 exec form 的 `uvx --from cc-web-mcp@<当前版本> cc-web-mcp hook-guard`，便于可靠传递 `--state` / `--config` 等参数。
 
 如果之前已经用普通 `pip`、editable install 或旧的 uv 缓存路径初始化过，切换到 `uvx` 后请重新运行：
 
@@ -33,7 +33,7 @@ uvx cc-web-mcp init --runner uvx --force
 首次初始化入口是 `init` 子命令。普通用户建议始终通过 `uvx cc-web-mcp init --runner uvx` 调用；只有 `pipx`、普通 `pip` 或 editable install 且命令已在 `PATH` 中时，才直接运行 `cc-web-mcp init`。初始化会：
 
 - 创建用户配置文件。
-- 注册 Claude Code 用户级 stdio MCP。普通 Python 安装会注册为当前 Python 的 `-m cc_web_mcp`；`--runner uvx` 会注册为 `uvx --from cc-web-mcp==<当前版本> cc-web-mcp`。
+- 注册 Claude Code 用户级 stdio MCP。普通 Python 安装会注册为当前 Python 的 `-m cc_web_mcp`；`--runner uvx` 会注册为 `uvx cc-web-mcp@<当前版本>`。
 - 向用户级 `~\.claude\CLAUDE.md` 写入第三方模型路由提示。
 - 向用户级 `~\.claude\settings.json` 合并 hook 守卫，并在写入前备份。
 
