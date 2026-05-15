@@ -204,6 +204,44 @@ def test_register_claude_mcp_resolves_windows_cmd_launcher(monkeypatch):
     assert stderr == ""
 
 
+def test_force_register_claude_mcp_removes_existing_server_before_add(monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_which(name):
+        if name == "claude":
+            return "claude"
+        if name == "uvx":
+            return "uvx"
+        return None
+
+    def fake_run(command, **kwargs):
+        calls.append(list(command))
+
+        class Result:
+            returncode = 0
+            stdout = "ok"
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr(install.shutil, "which", fake_which)
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+
+    registered, command, stdout, stderr = install.register_claude_mcp(
+        scope="user",
+        runner="uvx",
+        uvx_package="cc-web-mcp==0.1.2",
+        force=True,
+    )
+
+    assert registered is True
+    assert calls[0] == ["claude", "mcp", "remove", "cc-web", "--scope", "user"]
+    assert calls[1] == command
+    assert command[-2:] == ["uvx", "cc-web-mcp==0.1.2"]
+    assert stdout == "ok"
+    assert stderr == ""
+
+
 def test_resolve_claude_command_prefers_windows_cmd_launcher(monkeypatch):
     def fake_which(name):
         paths = {
@@ -265,3 +303,79 @@ def test_install_hooks_use_module_command(tmp_path):
     assert changed is True
     assert "-m cc_web_mcp.hooks.guard" in command
     assert "hooks/guard.py" not in command.replace("\\", "/")
+
+
+def test_force_install_hooks_replaces_console_script_guard_commands(tmp_path, monkeypatch):
+    monkeypatch.setattr(install, "resolve_uvx_command", lambda: "uvx")
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {
+                            "matcher": "",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "C:/Users/xhh/AppData/Local/Microsoft/WinGet/Links/uvx.exe cc-web-mcp hook-guard",
+                                    "timeout": 5,
+                                }
+                            ],
+                        },
+                        {
+                            "matcher": "",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "C:/Users/xhh/AppData/Local/uv/cache/archive-v0/old/Scripts/python.exe -m cc_web_mcp.hooks.guard",
+                                    "timeout": 5,
+                                }
+                            ],
+                        },
+                    ],
+                    "PreToolUse": [
+                        {
+                            "matcher": "^(mcp__cc[-_]web__.*|WebFetch)$",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "C:/Users/xhh/AppData/Local/Microsoft/WinGet/Links/uvx.exe cc-web-mcp hook-guard",
+                                    "timeout": 5,
+                                }
+                            ],
+                        },
+                        {
+                            "matcher": "^(mcp__cc[-_]web__.*|WebFetch)$",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "C:/Users/xhh/AppData/Local/uv/cache/archive-v0/old/Scripts/python.exe -m cc_web_mcp.hooks.guard",
+                                    "timeout": 5,
+                                }
+                            ],
+                        },
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    changed, _ = install.install_hooks(
+        settings,
+        python_command=None,
+        force=True,
+        runner="uvx",
+        uvx_package="cc-web-mcp==0.1.2",
+    )
+
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    session_entries = data["hooks"]["SessionStart"]
+    pre_tool_entries = data["hooks"]["PreToolUse"]
+
+    assert changed is True
+    assert len(session_entries) == 1
+    assert len(pre_tool_entries) == 1
+    assert session_entries[0]["hooks"][0]["command"] == "uvx cc-web-mcp==0.1.2 hook-guard"
+    assert pre_tool_entries[0]["hooks"][0]["command"] == "uvx cc-web-mcp==0.1.2 hook-guard"

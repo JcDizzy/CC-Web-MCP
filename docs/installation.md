@@ -62,7 +62,7 @@ py -3.11 -m cc_web_mcp doctor
 uvx cc-web-mcp init --runner uvx
 ```
 
-非 `uvx` 安装时才使用本地命令：
+非 `uvx` 安装，并且 `cc-web-mcp` 已经在 `PATH` 中时，才使用本地命令：
 
 ```powershell
 cc-web-mcp init
@@ -81,13 +81,19 @@ cc-web-mcp init
 uvx cc-web-mcp init --runner uvx --dry-run
 ```
 
-非 `uvx` 安装时，也可以用本地命令预览：
+非 `uvx` 安装且 `cc-web-mcp` 已在 `PATH` 中时，也可以用本地命令预览：
 
 ```powershell
 cc-web-mcp init --dry-run
 ```
 
-不注册 MCP，只写配置和 hook：
+不注册 MCP，只写配置和 hook。普通用户继续使用 `uvx`：
+
+```powershell
+uvx cc-web-mcp init --runner uvx --skip-mcp
+```
+
+非 `uvx` 安装且 `cc-web-mcp` 已在 `PATH` 中时，也可以写成：
 
 ```powershell
 cc-web-mcp init --skip-mcp
@@ -107,20 +113,40 @@ uvx cc-web-mcp init --runner uvx --with-pdf --force
 
 ## 本地诊断
 
-```powershell
-cc-web-mcp doctor
-```
-
-如果 `cc-web-mcp` 命令不在 `PATH` 中，使用：
+推荐的 `uvx` 安装方式不会把 `cc-web-mcp.exe` 放进你的 `PATH`，所以普通用户请这样诊断：
 
 ```powershell
-py -3.11 -m cc_web_mcp doctor
+uvx cc-web-mcp doctor
 ```
 
 只看 JSON，且跳过真实网络访问：
 
 ```powershell
+uvx cc-web-mcp doctor --json --skip-network
+```
+
+如果你使用的是 `pipx`，或者 `cc-web-mcp` 已经在 `PATH` 中，可以使用本地命令：
+
+```powershell
+cc-web-mcp doctor
+```
+
+如果是普通 `pip` / editable install，且 `cc-web-mcp` 命令不在 `PATH` 中，使用模块形式：
+
+```powershell
+py -3.11 -m cc_web_mcp doctor
+```
+
+本地命令也支持 JSON 和跳过网络：
+
+```powershell
 cc-web-mcp doctor --json --skip-network
+```
+
+如果本地命令不在 `PATH` 中，对应的模块形式是：
+
+```powershell
+py -3.11 -m cc_web_mcp doctor --json --skip-network
 ```
 
 确认 Claude Code MCP 注册：
@@ -131,19 +157,37 @@ claude mcp get cc-web
 
 ## 配置文件
 
-查看当前配置路径：
+查看当前配置路径。普通用户优先使用 `uvx`：
+
+```powershell
+uvx cc-web-mcp config path
+```
+
+非 `uvx` 安装且 `cc-web-mcp` 已在 `PATH` 中时，也可以写成：
 
 ```powershell
 cc-web-mcp config path
 ```
 
-只初始化配置文件，不写 Claude Code：
+只初始化配置文件，不写 Claude Code。普通用户优先使用 `uvx`：
+
+```powershell
+uvx cc-web-mcp config init
+```
+
+非 `uvx` 安装且 `cc-web-mcp` 已在 `PATH` 中时，也可以写成：
 
 ```powershell
 cc-web-mcp config init
 ```
 
-显示当前配置内容：
+显示当前配置内容。普通用户优先使用 `uvx`：
+
+```powershell
+uvx cc-web-mcp config show
+```
+
+非 `uvx` 安装且 `cc-web-mcp` 已在 `PATH` 中时，也可以写成：
 
 ```powershell
 cc-web-mcp config show
@@ -158,7 +202,14 @@ cc-web-mcp config show
 
 ```powershell
 $env:CC_WEB_MCP_CONFIG="D:\path\to\config.json"
-cc-web-mcp doctor
+uvx cc-web-mcp doctor
+```
+
+如果是普通 `pip` / editable install 且本地命令不在 `PATH` 中，环境变量同样适用于模块形式：
+
+```powershell
+$env:CC_WEB_MCP_CONFIG="D:\path\to\config.json"
+py -3.11 -m cc_web_mcp doctor
 ```
 
 ## 旧脚本兼容

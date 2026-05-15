@@ -16,7 +16,7 @@
 - 模型友好的失败提示：失败返回包含 `retryable`、`do_not_retry_reason` 和 `recommended_next_action`，减少重复调用和无效重试。
 - 截断续读提示：`fetch_url` 截断时返回 `truncation.next_call`，方便模型按下一段继续读取。
 - 状态显示：MCP 工具执行中会发送 progress/log 状态，返回 JSON 也会包含 `status_summary` 和 `steps`。
-- 本地诊断：`cc-web-mcp doctor` 可检查配置文件、Claude Code 指令、hook 守卫和搜索后端连通性是否就位。
+- 本地诊断：普通用户可通过 `uvx cc-web-mcp doctor` 检查配置文件、Claude Code 指令、hook 守卫和搜索后端连通性是否就位；非 uvx 安装也可使用本地 `cc-web-mcp doctor`。
 - 技术资料源轻量加权：默认小幅优先 GitHub、官方文档、包管理站点、Read the Docs、Stack Overflow 等技术来源，但不完全覆盖搜索后端原始排序。
 - 缓存和重复抓取控制：默认开启公开 URL 抓取缓存，TTL 由 `cache_ttl_seconds` 控制，缓存 key 包含 schema version。
 - PDF 可选提取：uvx 场景可通过 `uvx cc-web-mcp init --runner uvx --with-pdf --force` 注册 `cc-web-mcp[pdf]`，开启 `enable_pdf_extract` 后可用 `pypdf` 提取公开 PDF 文本。

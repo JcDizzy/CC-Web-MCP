@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from cc_web_mcp.config import resolve_config_path
-from cc_web_mcp.install import resolve_claude_command
+from cc_web_mcp.install import is_cc_web_guard_command, resolve_claude_command
 from cc_web_mcp.web import check_health
 
 
@@ -73,16 +73,7 @@ def _check_claude_instructions(path: Path) -> tuple[dict[str, Any], list[str]]:
 
 
 def _hook_command_mentions_guard(command: Any) -> bool:
-    if not isinstance(command, str):
-        return False
-    normalized = command.replace("\\", "/").lower()
-    return (
-        "cc_web_mcp/hooks/guard.py" in normalized
-        or "cc-web-mcp/hooks/guard.py" in normalized
-        or "cc_web_mcp.hooks.guard" in normalized
-        or "cc-web-mcp.hooks.guard" in normalized
-        or "hooks/guard.py" in normalized
-    )
+    return is_cc_web_guard_command(command)
 
 
 def _iter_hook_entries(settings: dict[str, Any], event_name: str) -> list[dict[str, Any]]:

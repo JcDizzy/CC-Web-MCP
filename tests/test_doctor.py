@@ -303,6 +303,39 @@ def test_doctor_fails_when_guard_is_only_registered_for_session_start(tmp_path):
     assert report["checks"]["hook_guard"]["pre_tool_use"] is False
 
 
+def test_doctor_accepts_console_script_hook_guard(tmp_path):
+    config = tmp_path / "config.json"
+    config.write_text('{"search_providers": ["duckduckgo", "bing_cn"]}', encoding="utf-8")
+    claude_memory = tmp_path / "CLAUDE.md"
+    claude_memory.write_text("Use cc-web MCP. Do not call WebSearch.", encoding="utf-8")
+    settings = tmp_path / "settings.json"
+    hook_command = "C:/Users/xhh/AppData/Local/Microsoft/WinGet/Links/uvx.exe cc-web-mcp==0.1.2 hook-guard"
+    settings.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {"matcher": "", "hooks": [{"type": "command", "command": hook_command}]}
+                    ],
+                    "PreToolUse": [
+                        {
+                            "matcher": "^(mcp__cc[-_]web__.*|WebFetch)$",
+                            "hooks": [{"type": "command", "command": hook_command}],
+                        }
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_doctor(config, claude_memory, settings)
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["checks"]["hook_guard"]["ok"] is True
+
+
 def test_doctor_fails_when_pre_tool_matcher_does_not_cover_webfetch(tmp_path):
     config = tmp_path / "config.json"
     config.write_text('{"search_providers": ["duckduckgo", "bing_cn"]}', encoding="utf-8")

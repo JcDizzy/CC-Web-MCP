@@ -148,11 +148,32 @@ def is_cc_web_guard_command(command: Any) -> bool:
     if not isinstance(command, str):
         return False
     normalized = command.replace("\\", "/").lower()
-    return (
+    if (
         "cc_web_mcp.hooks.guard" in normalized
         or "cc-web-mcp.hooks.guard" in normalized
         or "cc_web_mcp/hooks/guard.py" in normalized
         or "cc-web-mcp/hooks/guard.py" in normalized
+    ):
+        return True
+
+    try:
+        tokens = shlex.split(normalized)
+    except ValueError:
+        tokens = normalized.split()
+    if not tokens or tokens[-1] != "hook-guard":
+        return False
+
+    return any(_is_cc_web_console_token(token) for token in tokens[:-1])
+
+
+def _is_cc_web_console_token(token: str) -> bool:
+    basename = token.strip("\"'").rsplit("/", 1)[-1]
+    if basename in {"cc-web-mcp", "cc-web-mcp.exe"}:
+        return True
+    return (
+        basename.startswith("cc-web-mcp[")
+        or basename.startswith("cc-web-mcp==")
+        or basename.startswith("cc-web-mcp@")
     )
 
 
@@ -296,6 +317,17 @@ def build_claude_mcp_add_command(
     ]
 
 
+def build_claude_mcp_remove_command(scope: str = "user", server_name: str = "cc-web") -> list[str]:
+    return [
+        resolve_claude_command(),
+        "mcp",
+        "remove",
+        server_name,
+        "--scope",
+        scope,
+    ]
+
+
 def build_init_summary(
     config_path: Path | None = None,
     memory_path: Path | None = None,
@@ -342,9 +374,20 @@ def build_init_summary(
     }
 
 
-def register_claude_mcp(scope: str = "user", runner: str = "python", uvx_package: str = "cc-web-mcp") -> tuple[bool, list[str], str, str]:
+def register_claude_mcp(
+    scope: str = "user",
+    runner: str = "python",
+    uvx_package: str = "cc-web-mcp",
+    force: bool = False,
+) -> tuple[bool, list[str], str, str]:
     command = build_claude_mcp_add_command(scope=scope, runner=runner, uvx_package=uvx_package)
     try:
+        if force:
+            remove_command = build_claude_mcp_remove_command(scope=scope)
+            remove_result = subprocess.run(remove_command, text=True, capture_output=True, check=False)
+            remove_output = f"{remove_result.stdout}\n{remove_result.stderr}".lower()
+            if remove_result.returncode != 0 and "not found" not in remove_output and "does not exist" not in remove_output:
+                return False, remove_command, remove_result.stdout, remove_result.stderr
         result = subprocess.run(command, text=True, capture_output=True, check=False)
     except OSError as exc:
         return False, command, "", f"{type(exc).__name__}: {exc}"
@@ -410,7 +453,12 @@ def run_init(
         summary["hooks_backup"] = str(backup_path) if backup_path else None
 
     if not skip_mcp:
-        registered, command, stdout, stderr = register_claude_mcp(scope=scope, runner=runner, uvx_package=resolved_uvx_package)
+        registered, command, stdout, stderr = register_claude_mcp(
+            scope=scope,
+            runner=runner,
+            uvx_package=resolved_uvx_package,
+            force=force,
+        )
         summary["mcp_registered"] = registered
         summary["mcp_registration_command"] = " ".join(command)
         summary["mcp_stdout"] = stdout

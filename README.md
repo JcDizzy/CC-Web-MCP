@@ -30,7 +30,7 @@ uvx cc-web-mcp doctor
 uvx cc-web-mcp init --runner uvx --force
 ```
 
-`cc-web-mcp init` 是推荐的首次初始化入口。它会：
+首次初始化入口是 `init` 子命令。普通用户建议始终通过 `uvx cc-web-mcp init --runner uvx` 调用；只有 `pipx`、普通 `pip` 或 editable install 且命令已在 `PATH` 中时，才直接运行 `cc-web-mcp init`。初始化会：
 
 - 创建用户配置文件。
 - 注册 Claude Code 用户级 stdio MCP。普通 Python 安装会注册为当前 Python 的 `-m cc_web_mcp`；`--runner uvx` 会注册为 `uvx cc-web-mcp`。
@@ -61,13 +61,20 @@ uvx cc-web-mcp init --runner uvx --with-pdf --force
 uvx cc-web-mcp init --runner uvx --dry-run
 ```
 
-非 `uvx` 安装时，也可以用本地命令预览：
+非 `uvx` 安装且 `cc-web-mcp` 已在 `PATH` 中时，也可以用本地命令预览：
 
 ```powershell
 cc-web-mcp init --dry-run
 ```
 
-如果只想初始化配置文件：
+如果只想初始化配置文件，普通用户继续使用 `uvx`：
+
+```powershell
+uvx cc-web-mcp config init
+uvx cc-web-mcp config path
+```
+
+非 `uvx` 安装且 `cc-web-mcp` 已在 `PATH` 中时，也可以写成：
 
 ```powershell
 cc-web-mcp config init
