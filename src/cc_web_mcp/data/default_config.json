@@ -21,5 +21,7 @@
   "jina_min_chars": 300,
   "allow_private_networks": false,
   "cache_ttl_seconds": 1800,
+  "search_cache_ttl_seconds": 60,
+  "trusted_proxy_domains": [],
   "enable_pdf_extract": false
 }

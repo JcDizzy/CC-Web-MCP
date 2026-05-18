@@ -38,6 +38,8 @@ cc-web-mcp config init
   "jina_min_chars": 300,
   "allow_private_networks": false,
   "cache_ttl_seconds": 1800,
+  "search_cache_ttl_seconds": 60,
+  "trusted_proxy_domains": [],
   "enable_pdf_extract": false
 }
 ```
@@ -86,6 +88,14 @@ cc-web-mcp config init
 
 `bing_cn` 是实用 fallback，不是完整 DuckDuckGo/全球搜索结果的等价替代。使用 `bing_cn` 时，工具返回会包含 `search_scope_note` 提醒模型当前结果可能有区域偏置。
 
+如果你希望增加一个不依赖账号的英文公开搜索 fallback，可以把 Mojeek 放到链路后面：
+
+```json
+"search_providers": ["duckduckgo", "mojeek", "bing_cn"]
+```
+
+`mojeek` 使用公开 HTML 搜索入口，适合作为轻量补充，不等价于付费搜索 API。
+
 如果你有 SearXNG 实例，可以改为：
 
 ```json
@@ -95,7 +105,9 @@ cc-web-mcp config init
 }
 ```
 
-`health_check` 会返回 `search_providers`、`search_backend_status` 和 `first_available_search_backend`，方便你一眼判断当前环境到底能用哪个搜索后端。
+`searxng` 会优先尝试 JSON 搜索接口；如果实例禁用了 JSON 输出，会自动降级读取 HTML 结果页。
+
+`health_check` 会返回 `search_providers`、`search_backend_status` 和 `first_available_search_backend`，方便你一眼判断当前环境到底能用哪个搜索后端。`429` 这类限流状态会被视为不可用，避免误把暂时不可搜索的后端排在第一位。
 
 ## 抓取与摘要
 
@@ -121,12 +133,20 @@ cc-web-mcp config init
 
 ## 缓存与安全开关
 
-`cache_ttl_seconds` 控制公开 URL 抓取缓存时间。缓存只在 `allow_private_networks: false` 时启用，缓存 key 包含 schema version，避免旧格式缓存污染新逻辑。
+`cache_ttl_seconds` 控制公开 URL 正文抓取缓存时间。正文抓取缓存只在 `allow_private_networks: false` 时启用，缓存 key 包含 schema version，避免旧格式缓存污染新逻辑。
+
+`search_cache_ttl_seconds` 控制成功搜索结果的短缓存时间，默认 `60` 秒。它只缓存成功结果，不缓存失败或限流响应；它独立于 `allow_private_networks`，因为搜索缓存不抓取用户提供的任意 URL。
 
 `allow_private_networks` 默认是 `false`。只建议在可信内网文档场景临时开启：
 
 ```json
 "allow_private_networks": true
+```
+
+`trusted_proxy_domains` 用于少数本机透明代理 / TUN 环境：某些公开域名可能解析到 `198.18.0.0/15` 代理测试网段。cc-web 默认会阻止这类解析；只有你确认该域名由可信代理接管时，才加入白名单：
+
+```json
+"trusted_proxy_domains": ["github.com"]
 ```
 
 ## PDF 提取

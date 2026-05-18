@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 
 import httpx
@@ -85,6 +86,42 @@ def test_normalize_searxng_results():
     ]
 
 
+def test_normalize_searxng_html_results():
+    html = """
+    <html><body>
+      <div class="result">
+        <a href="https://example.com/preferences">Preferences</a>
+      </div>
+      <article class="result">
+        <h3><a href="https://example.com/doc">Example Doc</a></h3>
+        <p class="content">Readable snippet.</p>
+      </article>
+    </body></html>
+    """
+
+    results = web.normalize_searxng_html_results(html, max_results=5)
+
+    assert results == [
+        {"title": "Example Doc", "url": "https://example.com/doc", "snippet": "Readable snippet."}
+    ]
+
+
+def test_normalize_mojeek_results():
+    html = """
+    <html><body>
+      <nav><a href="https://www.mojeek.com/about">About Mojeek</a></nav>
+      <a class="title" href="https://example.com/mojeek">Mojeek Result</a>
+      <p class="s">Mojeek snippet.</p>
+    </body></html>
+    """
+
+    results = web.normalize_mojeek_results(html, max_results=5)
+
+    assert results == [
+        {"title": "Mojeek Result", "url": "https://example.com/mojeek", "snippet": "Mojeek snippet."}
+    ]
+
+
 def test_normalize_bing_cn_results():
     html = """
     <html><body>
@@ -157,6 +194,96 @@ def test_search_web_uses_searxng_provider(monkeypatch):
     assert result["results"][0]["url"] == "https://github.com/example/repo"
 
 
+def test_search_web_uses_mojeek_provider(monkeypatch):
+    class Config:
+        search_provider = "mojeek"
+        search_providers = ("mojeek",)
+        searxng_base_url = ""
+        max_search_results = 10
+        prefer_technical_sources = False
+        search_cache_ttl_seconds = 0
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, params=None, follow_redirects=True):
+            assert url == "https://www.mojeek.com/search"
+            assert params["q"] == "mcp docs"
+            return httpx.Response(
+                200,
+                text="""
+                <html><body>
+                  <a class="title" href="https://example.com/mojeek">Mojeek Result</a>
+                  <p class="s">Mojeek snippet.</p>
+                </body></html>
+                """,
+                request=httpx.Request("GET", url),
+            )
+
+    monkeypatch.setattr(web.httpx, "AsyncClient", FakeClient)
+
+    result = asyncio.run(web.search_web("mcp docs", max_results=2, config=Config()))
+
+    assert result["ok"] is True
+    assert result["backend"] == "mojeek"
+    assert result["results"][0]["url"] == "https://example.com/mojeek"
+
+
+def test_search_web_falls_back_to_searxng_html_when_json_fails(monkeypatch):
+    class Config:
+        search_provider = "searxng"
+        search_providers = ("searxng",)
+        searxng_base_url = "https://search.example"
+        max_search_results = 10
+        prefer_technical_sources = False
+        search_cache_ttl_seconds = 0
+
+    calls = []
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, params=None, follow_redirects=True):
+            calls.append(params["format"])
+            if params["format"] == "json":
+                return httpx.Response(429, text="limited", request=httpx.Request("GET", url))
+            return httpx.Response(
+                200,
+                text="""
+                <html><body>
+                  <article class="result">
+                    <h3><a href="https://example.com/html">HTML Result</a></h3>
+                    <p>HTML snippet.</p>
+                  </article>
+                </body></html>
+                """,
+                request=httpx.Request("GET", url),
+            )
+
+    monkeypatch.setattr(web.httpx, "AsyncClient", FakeClient)
+
+    result = asyncio.run(web.search_web("mcp docs", max_results=2, config=Config()))
+
+    assert calls == ["json", "html"]
+    assert result["ok"] is True
+    assert result["backend"] == "searxng_html"
+    assert result["results"][0]["url"] == "https://example.com/html"
+
+
 def test_search_web_falls_back_to_bing_cn_when_duckduckgo_fails(monkeypatch):
     class Config:
         search_provider = "duckduckgo"
@@ -205,6 +332,101 @@ def test_search_web_falls_back_to_bing_cn_when_duckduckgo_fails(monkeypatch):
     assert result["attempted_backends"][0]["ok"] is False
     assert result["attempted_backends"][1] == {"backend": "bing_cn", "ok": True}
     assert result["results"][0]["url"] == "https://github.com/modelcontextprotocol/servers"
+
+
+def test_search_web_uses_short_ttl_success_cache(monkeypatch, tmp_path):
+    class Config:
+        search_provider = "mojeek"
+        search_providers = ("mojeek",)
+        searxng_base_url = ""
+        max_search_results = 10
+        prefer_technical_sources = False
+        search_cache_ttl_seconds = 600
+        cache_dir = str(tmp_path)
+
+    calls = 0
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, params=None, follow_redirects=True):
+            nonlocal calls
+            calls += 1
+            return httpx.Response(
+                200,
+                text=f"""
+                <html><body>
+                  <a class="title" href="https://example.com/{calls}">Result {calls}</a>
+                  <p class="s">snippet</p>
+                </body></html>
+                """,
+                request=httpx.Request("GET", url),
+            )
+
+    monkeypatch.setattr(web.httpx, "AsyncClient", FakeClient)
+
+    first = asyncio.run(web.search_web("cache me", max_results=2, config=Config()))
+    second = asyncio.run(web.search_web("cache me", max_results=2, config=Config()))
+
+    assert calls == 1
+    assert first["cache"] == "miss"
+    assert second["cache"] == "hit"
+    assert second["results"][0]["url"] == "https://example.com/1"
+
+
+def test_search_web_cache_is_independent_from_private_network_fetch_setting(monkeypatch, tmp_path):
+    class Config:
+        search_provider = "mojeek"
+        search_providers = ("mojeek",)
+        searxng_base_url = ""
+        max_search_results = 10
+        prefer_technical_sources = False
+        search_cache_ttl_seconds = 600
+        allow_private_networks = True
+        cache_dir = str(tmp_path)
+
+    calls = 0
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, params=None, follow_redirects=True):
+            nonlocal calls
+            calls += 1
+            return httpx.Response(
+                200,
+                text=f"""
+                <html><body>
+                  <a class="title" href="https://example.com/{calls}">Result {calls}</a>
+                  <p class="s">snippet</p>
+                </body></html>
+                """,
+                request=httpx.Request("GET", url),
+            )
+
+    monkeypatch.setattr(web.httpx, "AsyncClient", FakeClient)
+
+    first = asyncio.run(web.search_web("cache me", max_results=2, config=Config()))
+    second = asyncio.run(web.search_web("cache me", max_results=2, config=Config()))
+
+    assert calls == 1
+    assert first["cache"] == "miss"
+    assert second["cache"] == "hit"
+    assert second["results"][0]["url"] == "https://example.com/1"
 
 
 def test_search_web_records_status_steps_and_callback(monkeypatch):
@@ -353,9 +575,10 @@ def test_check_health_reports_configured_search_provider_chain(monkeypatch, tmp_
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        async def get(self, url, follow_redirects=True):
+        async def get(self, url, params=None, follow_redirects=True):
             if "duckduckgo.com" in url:
                 raise httpx.ConnectError("blocked", request=httpx.Request("GET", url))
+            assert params["q"] == "cc-web health"
             return FakeResponse(200)
 
     monkeypatch.setattr(web, "DEFAULT_CONFIG_PATH", config_path)
@@ -367,6 +590,45 @@ def test_check_health_reports_configured_search_provider_chain(monkeypatch, tmp_
     assert health["config"]["block_native_web_for_allowed_models"] is False
     assert health["search_backend_status"]["duckduckgo"]["ok"] is False
     assert health["search_backend_status"]["bing_cn"] == {"ok": True, "status": 200}
+    assert health["first_available_search_backend"] == "bing_cn"
+
+
+def test_check_health_marks_rate_limited_search_backend_unavailable(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "search_providers": ["mojeek", "bing_cn"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeResponse:
+        def __init__(self, status_code):
+            self.status_code = status_code
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, params=None, follow_redirects=True):
+            if "mojeek.com" in url:
+                return FakeResponse(429)
+            return FakeResponse(200)
+
+    monkeypatch.setattr(web, "DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr(web.httpx, "AsyncClient", FakeClient)
+
+    health = asyncio.run(web.check_health())
+
+    assert health["search_backend_status"]["mojeek"] == {"ok": False, "status": 429}
     assert health["first_available_search_backend"] == "bing_cn"
 
 
@@ -445,10 +707,53 @@ def test_validate_fetch_url_allows_public_dns_resolution(monkeypatch):
     assert validate_fetch_url("https://example.com/path") == "https://example.com/path"
 
 
-def test_validate_fetch_url_allows_proxy_benchmark_address_resolution(monkeypatch):
+def test_validate_fetch_url_blocks_proxy_benchmark_address_resolution_by_default(monkeypatch):
     monkeypatch.setattr(web.socket, "getaddrinfo", lambda *args, **kwargs: [(None, None, None, None, ("198.18.0.176", 443))])
 
-    assert validate_fetch_url("https://github.com/repo") == "https://github.com/repo"
+    with pytest.raises(FetchSafetyError):
+        validate_fetch_url("https://github.com/repo")
+
+
+def test_validate_fetch_url_allows_trusted_proxy_benchmark_address_resolution(monkeypatch):
+    monkeypatch.setattr(web.socket, "getaddrinfo", lambda *args, **kwargs: [(None, None, None, None, ("198.18.0.176", 443))])
+
+    assert validate_fetch_url("https://github.com/repo", trusted_proxy_domains=("github.com",)) == "https://github.com/repo"
+
+
+def test_build_fetch_target_pins_validated_ip_and_keeps_tls_hostname(monkeypatch):
+    monkeypatch.setattr(web.socket, "getaddrinfo", lambda *args, **kwargs: [(None, None, None, None, ("93.184.216.34", 443))])
+
+    target = web.build_fetch_target("https://example.com/docs?q=1")
+
+    assert target.connect_host == "93.184.216.34"
+    assert target.hostname == "example.com"
+    assert target.host_header == "example.com"
+    assert target.request_target == "/docs?q=1"
+
+
+def test_limited_get_uses_fetch_target_and_preserves_original_url(monkeypatch):
+    monkeypatch.setattr(web.socket, "getaddrinfo", lambda *args, **kwargs: [(None, None, None, None, ("93.184.216.34", 443))])
+
+    seen_requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_requests.append(request)
+        return httpx.Response(
+            200,
+            content=b"ok",
+            headers={"content-type": "text/plain"},
+            request=request,
+        )
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await web._limited_get(client, "http://example.com/docs?q=1", allow_private_networks=False)
+
+    response = asyncio.run(run())
+
+    assert seen_requests[0].url == "http://93.184.216.34/docs?q=1"
+    assert seen_requests[0].headers["host"] == "example.com"
+    assert response.url == "http://example.com/docs?q=1"
 
 
 def test_extract_markdown_converts_relative_links_to_absolute():
@@ -495,7 +800,7 @@ def test_fetch_page_returns_paginated_window_metadata(monkeypatch, public_dns):
         enable_jina_fallback = False
         jina_min_chars = 300
 
-    async def fake_limited_get(client, url, allow_private_networks=False):
+    async def fake_limited_get(client, url, allow_private_networks=False, trusted_proxy_domains=None):
         return httpx.Response(
             200,
             content=b"<html><body><main><p>abcdefghij</p></main></body></html>",
@@ -524,7 +829,7 @@ def test_fetch_page_returns_continuation_guidance_for_truncated_content(monkeypa
         allow_private_networks = False
         cache_ttl_seconds = 0
 
-    async def fake_limited_get(client, url, allow_private_networks=False):
+    async def fake_limited_get(client, url, allow_private_networks=False, trusted_proxy_domains=None):
         return httpx.Response(
             200,
             content=b"<html><body><main><p>abcdefghij</p></main></body></html>",
@@ -553,7 +858,7 @@ def test_fetch_page_records_status_steps_and_callback(monkeypatch, public_dns):
         allow_private_networks = False
         cache_ttl_seconds = 0
 
-    async def fake_limited_get(client, url, allow_private_networks=False):
+    async def fake_limited_get(client, url, allow_private_networks=False, trusted_proxy_domains=None):
         return httpx.Response(
             200,
             content=b"<html><body><main><p>Hello status</p></main></body></html>",
@@ -587,7 +892,7 @@ def test_fetch_page_formats_json_content(monkeypatch, public_dns):
         allow_private_networks = False
         cache_ttl_seconds = 0
 
-    async def fake_limited_get(client, url, allow_private_networks=False):
+    async def fake_limited_get(client, url, allow_private_networks=False, trusted_proxy_domains=None):
         return httpx.Response(
             200,
             content=b'{"name":"cc-web","items":[1,2]}',
@@ -613,7 +918,7 @@ def test_fetch_page_rejects_pdf_content(monkeypatch, public_dns):
         allow_private_networks = False
         cache_ttl_seconds = 0
 
-    async def fake_limited_get(client, url, allow_private_networks=False):
+    async def fake_limited_get(client, url, allow_private_networks=False, trusted_proxy_domains=None):
         return httpx.Response(
             200,
             content=b"%PDF-1.7",
@@ -649,7 +954,7 @@ def test_fetch_page_extracts_pdf_when_enabled(monkeypatch, public_dns):
         cache_ttl_seconds = 0
         enable_pdf_extract = True
 
-    async def fake_limited_get(client, url, allow_private_networks=False):
+    async def fake_limited_get(client, url, allow_private_networks=False, trusted_proxy_domains=None):
         return httpx.Response(
             200,
             content=b"%PDF-1.7 fake",
@@ -681,7 +986,7 @@ def test_fetch_page_uses_public_url_cache(monkeypatch, tmp_path, public_dns):
 
     calls = 0
 
-    async def fake_limited_get(client, url, allow_private_networks=False):
+    async def fake_limited_get(client, url, allow_private_networks=False, trusted_proxy_domains=None):
         nonlocal calls
         calls += 1
         return httpx.Response(
@@ -715,7 +1020,7 @@ def test_fetch_page_does_not_cache_jina_fallback_under_direct_url(monkeypatch, t
     direct_calls = 0
     jina_calls = 0
 
-    async def short_limited_get(client, url, allow_private_networks=False):
+    async def short_limited_get(client, url, allow_private_networks=False, trusted_proxy_domains=None):
         nonlocal direct_calls
         direct_calls += 1
         return httpx.Response(
@@ -762,7 +1067,7 @@ def test_fetch_page_uses_jina_fallback_when_primary_fetch_fails(monkeypatch, pub
         cache_ttl_seconds = 0
         allow_private_networks = False
 
-    async def failing_limited_get(client, url, allow_private_networks=False):
+    async def failing_limited_get(client, url, allow_private_networks=False, trusted_proxy_domains=None):
         request = httpx.Request("GET", url)
         response = httpx.Response(403, request=request)
         raise httpx.HTTPStatusError("forbidden", request=request, response=response)
@@ -870,7 +1175,7 @@ def test_fetch_page_returns_anti_bot_diagnostics_when_direct_fetch_is_blocked(mo
         allow_private_networks = False
         cache_ttl_seconds = 0
 
-    async def fake_limited_get(client, url, allow_private_networks=False):
+    async def fake_limited_get(client, url, allow_private_networks=False, trusted_proxy_domains=None):
         request = httpx.Request("GET", url)
         response = httpx.Response(
             403,
@@ -902,7 +1207,7 @@ def test_fetch_page_marks_known_site_read_timeout_as_suspected_antibot(monkeypat
         allow_private_networks = False
         cache_ttl_seconds = 0
 
-    async def fake_limited_get(client, url, allow_private_networks=False):
+    async def fake_limited_get(client, url, allow_private_networks=False, trusted_proxy_domains=None):
         request = httpx.Request("GET", url)
         raise httpx.ReadTimeout("timed out", request=request)
 
@@ -926,7 +1231,7 @@ def test_fetch_page_marks_plain_network_timeout_retryable(monkeypatch, public_dn
         allow_private_networks = False
         cache_ttl_seconds = 0
 
-    async def fake_limited_get(client, url, allow_private_networks=False):
+    async def fake_limited_get(client, url, allow_private_networks=False, trusted_proxy_domains=None):
         request = httpx.Request("GET", url)
         raise httpx.ReadTimeout("timed out", request=request)
 
@@ -950,7 +1255,7 @@ def test_fetch_page_keeps_direct_anti_bot_diagnostics_when_jina_fallback_fails(m
         allow_private_networks = False
         cache_ttl_seconds = 0
 
-    async def fake_limited_get(client, url, allow_private_networks=False):
+    async def fake_limited_get(client, url, allow_private_networks=False, trusted_proxy_domains=None):
         request = httpx.Request("GET", url)
         response = httpx.Response(
             403,

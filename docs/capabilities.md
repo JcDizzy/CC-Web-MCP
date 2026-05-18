@@ -20,6 +20,8 @@
 
 这样模型可以继续拿到可用资料，同时知道当前不是完整的 DuckDuckGo/全球搜索结果。
 
+当前搜索后端包括 `duckduckgo`、`bing_cn`、`searxng` 和 `mojeek`。SearXNG 会优先使用 JSON 接口，JSON 被实例限流或关闭时会降级读取 HTML 结果页；Mojeek 使用公开 HTML 搜索入口，适合作为轻量 fallback。
+
 ## 上下文友好的失败提示和分页
 
 `fetch_url` 和 `web_search` 失败时会尽量返回给模型可直接使用的处理字段：
@@ -65,3 +67,5 @@
 Markdown 转换前会把 `<a href>` 解析成绝对链接。页面内 `/docs/xxx`、`../guide` 这类相对链接会按页面 URL 转成完整链接。
 
 默认开启公开 URL 抓取缓存，TTL 由 `cache_ttl_seconds` 控制。Jina Reader fallback 结果不会写入原 URL 的直接抓取缓存，避免临时 fallback 掩盖后续恢复的原站点内容。
+
+成功搜索结果也有独立短缓存，TTL 由 `search_cache_ttl_seconds` 控制，默认 `60` 秒。它只缓存成功搜索，失败、限流和全部后端不可用的结果不会写入缓存。
