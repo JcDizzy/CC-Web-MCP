@@ -238,11 +238,7 @@ def _check_hook_guard(path: Path, config_path: Path) -> tuple[dict[str, Any], li
     pre_tool_ok, pre_tool_reason = _check_hook_event(
         data,
         "PreToolUse",
-        (
-            "mcp__cc-web__fetch_url",
-            "mcp__cc_web__fetch_url",
-            "WebFetch",
-        ),
+        ("WebFetch",),
     )
     smoke_check: dict[str, Any] = {"ok": None, "skipped": True}
     if session_ok:

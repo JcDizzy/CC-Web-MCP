@@ -18,8 +18,9 @@ from cc_web_mcp.config import ensure_user_config, resolve_config_path
 
 START_MARKER = "<!-- cc-web-mcp:start -->"
 END_MARKER = "<!-- cc-web-mcp:end -->"
-DEFAULT_MATCHER = r"^(mcp__cc[-_]web__.*|WebFetch)$"
+DEFAULT_MATCHER = r"^WebFetch$"
 LEGACY_MATCHERS = (
+    r"^(mcp__cc[-_]web__.*|WebFetch)$",
     r"^(mcp__cc[-_]web__.*|WebSearch|WebFetch)$",
 )
 

@@ -24,6 +24,7 @@
   "cache_ttl_seconds": 1800,
   "search_cache_ttl_seconds": 300,
   "search_backend_cooldown_seconds": 60,
+  "trust_tun_fake_ip_dns": false,
   "trusted_proxy_domains": [],
   "enable_pdf_extract": false
 }

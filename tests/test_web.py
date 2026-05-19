@@ -965,14 +965,44 @@ def test_load_config_keeps_ordered_search_providers(tmp_path):
     assert config.search_providers == ("duckduckgo", "bing_cn")
 
 
-def test_load_config_defaults_to_international_bing_before_bing_cn(tmp_path):
+def test_load_config_defaults_to_international_bing_before_bing_cn(monkeypatch, tmp_path):
     config_path = tmp_path / "config.json"
     config_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        web,
+        "default_config_dict",
+        lambda: {
+            "search_providers": ["duckduckgo", "bing", "bing_cn"],
+            "search_cache_ttl_seconds": 300,
+        },
+    )
 
     config = web.load_config(config_path)
 
     assert config.search_providers == ("duckduckgo", "bing", "bing_cn")
     assert config.search_cache_ttl_seconds == 300
+
+
+def test_load_config_uses_packaged_defaults_when_user_config_is_missing(monkeypatch, tmp_path):
+    missing_config = tmp_path / "missing.json"
+
+    monkeypatch.setattr(
+        web,
+        "default_config_dict",
+        lambda: {
+            "allowed_model_patterns": ["deepseek"],
+            "search_providers": ["SearXNG", "duckduckgo", "bing"],
+            "searxng_base_url": "http://127.0.0.1:8888",
+            "search_cache_ttl_seconds": 123,
+        },
+    )
+
+    config = web.load_config(missing_config)
+
+    assert config.search_provider == "searxng"
+    assert config.search_providers == ("searxng", "duckduckgo", "bing")
+    assert config.searxng_base_url == "http://127.0.0.1:8888"
+    assert config.search_cache_ttl_seconds == 123
 
 
 def test_search_providers_prefer_explicit_chain_over_legacy_provider(tmp_path):
@@ -1205,6 +1235,26 @@ def test_validate_fetch_url_allows_trusted_proxy_benchmark_address_resolution(mo
     assert validate_fetch_url("https://github.com/repo", trusted_proxy_domains=("github.com",)) == "https://github.com/repo"
 
 
+def test_validate_fetch_url_allows_tun_fake_ip_dns_when_enabled(monkeypatch):
+    monkeypatch.setattr(web.socket, "getaddrinfo", lambda *args, **kwargs: [(None, None, None, None, ("198.18.0.176", 443))])
+
+    assert validate_fetch_url("https://docs.python.org/3/", trust_tun_fake_ip_dns=True) == "https://docs.python.org/3/"
+
+
+def test_validate_fetch_url_still_blocks_direct_tun_fake_ip_literal_when_enabled(monkeypatch):
+    monkeypatch.setattr(web.socket, "getaddrinfo", lambda *args, **kwargs: [(None, None, None, None, ("198.18.0.176", 443))])
+
+    with pytest.raises(FetchSafetyError):
+        validate_fetch_url("https://198.18.0.176/admin", trust_tun_fake_ip_dns=True)
+
+
+def test_validate_fetch_url_still_blocks_private_dns_when_tun_fake_ip_enabled(monkeypatch):
+    monkeypatch.setattr(web.socket, "getaddrinfo", lambda *args, **kwargs: [(None, None, None, None, ("127.0.0.1", 443))])
+
+    with pytest.raises(FetchSafetyError):
+        validate_fetch_url("https://example.com/admin", trust_tun_fake_ip_dns=True)
+
+
 def test_evaluate_network_policy_records_blocked_dns_resolution(monkeypatch):
     monkeypatch.setattr(web.socket, "getaddrinfo", lambda *args, **kwargs: [(None, None, None, None, ("127.0.0.1", 443))])
 
@@ -1216,6 +1266,18 @@ def test_evaluate_network_policy_records_blocked_dns_resolution(monkeypatch):
     assert decision["blocked_ips"] == ["127.0.0.1"]
 
 
+def test_evaluate_network_policy_records_tun_fake_ip_trust(monkeypatch):
+    monkeypatch.setattr(web.socket, "getaddrinfo", lambda *args, **kwargs: [(None, None, None, None, ("198.18.1.27", 443))])
+
+    decision = web.evaluate_network_policy("https://docs.python.org/3/", trust_tun_fake_ip_dns=True)
+
+    assert decision["allowed"] is True
+    assert decision["reason"] == "trusted_tun_fake_ip_dns"
+    assert decision["trusted_proxy"] is True
+    assert decision["resolved_ips"] == ["198.18.1.27"]
+    assert decision["blocked_ips"] == ["198.18.1.27"]
+
+
 def test_build_fetch_target_pins_validated_ip_and_keeps_tls_hostname(monkeypatch):
     monkeypatch.setattr(web.socket, "getaddrinfo", lambda *args, **kwargs: [(None, None, None, None, ("93.184.216.34", 443))])
 
@@ -1225,6 +1287,17 @@ def test_build_fetch_target_pins_validated_ip_and_keeps_tls_hostname(monkeypatch
     assert target.hostname == "example.com"
     assert target.host_header == "example.com"
     assert target.request_target == "/docs?q=1"
+
+
+def test_build_fetch_target_allows_tun_fake_ip_dns_when_enabled(monkeypatch):
+    monkeypatch.setattr(web.socket, "getaddrinfo", lambda *args, **kwargs: [(None, None, None, None, ("198.18.1.27", 443))])
+
+    target = web.build_fetch_target("https://docs.python.org/3/", trust_tun_fake_ip_dns=True)
+
+    assert target.connect_host == "198.18.1.27"
+    assert target.hostname == "docs.python.org"
+    assert target.host_header == "docs.python.org"
+    assert target.request_target == "/3/"
 
 
 def test_limited_get_uses_fetch_target_and_preserves_original_url(monkeypatch):

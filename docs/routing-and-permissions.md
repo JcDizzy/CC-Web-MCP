@@ -12,13 +12,13 @@ cc-web 的默认策略是：
 
 ## Hook 守卫
 
-`cc-web-mcp hook-guard` 可作为 Claude Code `PreToolUse` hook 使用。它会读取用户配置文件，默认只允许匹配 `allowed_model_patterns` 的模型调用 `mcp__cc-web__*` / `mcp__cc_web__*` 工具，并拦截第三方模型误用本地可达的原生 `WebFetch`。
+`cc-web-mcp hook-guard` 可作为 Claude Code `PreToolUse` hook 使用。它会读取用户配置文件，并拦截第三方模型误用本地可达的原生 `WebFetch`。cc-web MCP 工具本身不再默认经过 hook，避免工具调用成功时仍出现额外的非阻塞 hook 噪音。
 
 例外：当 `allow_fetch_url_for_claude` 为 `true` 时，官方 Claude 可以调用 `fetch_url`；`web_search` 和 `research_brief` 仍会被守卫拦截。
 
 `WebSearch` 的边界要特别注意：在 DeepSeek 等第三方 API 中，`WebSearch` 可能在 API 请求阶段直接返回 400，`PreToolUse` hook 不会触发。所以 `WebSearch` 预防依赖 `cc-web-mcp init` 写入的 `CLAUDE.md` 指令；hook 只负责 `WebFetch` 和 cc-web 工具的本地兜底。
 
-`PreToolUse` 的 matcher 推荐包含 cc-web MCP 工具和 `WebFetch`，例如：
+`PreToolUse` 的 matcher 推荐只匹配 `WebFetch`，例如：
 
 ```json
 {
@@ -37,7 +37,7 @@ cc-web 的默认策略是：
     ],
     "PreToolUse": [
       {
-        "matcher": "^(mcp__cc[-_]web__.*|WebFetch)$",
+        "matcher": "^WebFetch$",
         "hooks": [
           {
             "type": "command",
@@ -59,7 +59,7 @@ uvx cc-web-mcp init --runner uvx
 
 如果手动配置 hook，推荐参考初始化命令自动写入的 exec form：`command` 为 `uvx`，`args` 为 `["--from", "cc-web-mcp@<当前版本>", "cc-web-mcp", "hook-guard"]`。只有在 `cc-web-mcp` 已经通过 `pipx` 或 PATH 可见的本地安装方式可直接运行时，才使用示例里的 `cc-web-mcp hook-guard` console script；这样可以避免把具体仓库路径或 Python 解释器路径写死在 `settings.json` 里。
 
-这样会形成双层路由：`CLAUDE.md` 负责在模型发起请求前预防 `WebSearch`；hook 负责在本地执行层拦截 `WebFetch` 和 cc-web 误用。官方 Claude 默认走原生 `WebSearch/WebFetch`；DeepSeek、Qwen、Kimi 等匹配模型默认走 `cc-web`。
+这样会形成双层路由：`CLAUDE.md` 负责在模型发起请求前预防 `WebSearch`；hook 负责在本地执行层拦截 `WebFetch`。官方 Claude 默认走原生 `WebSearch/WebFetch`；DeepSeek、Qwen、Kimi 等匹配模型默认走 `cc-web`。
 
 守卫输出会同时包含：
 
@@ -121,6 +121,6 @@ uvx cc-web-mcp init --runner uvx
 }
 ```
 
-注意：这里是权限规则里的通配写法；hook `matcher` 使用 Claude Code hook matcher 规则，推荐保留正则 `^(mcp__cc[-_]web__.*|WebFetch)$`。
+注意：这里是权限规则里的通配写法；hook `matcher` 使用 Claude Code hook matcher 规则，推荐保留正则 `^WebFetch$`。
 
 不建议为了这个 MCP 长期开启 `--dangerously-skip-permissions`。更稳妥的方式是只 allow `cc-web` 的只读工具，同时保留 hook 守卫对非目标模型的拦截。

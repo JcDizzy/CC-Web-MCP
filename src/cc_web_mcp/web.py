@@ -21,7 +21,7 @@ import httpx
 from bs4 import BeautifulSoup
 from markdownify import markdownify as html_to_markdown
 
-from cc_web_mcp.config import resolve_config_path
+from cc_web_mcp.config import default_config_dict, resolve_config_path
 
 
 USER_AGENT = (
@@ -270,6 +270,7 @@ class GlobalWebConfig:
     cache_ttl_seconds: int = 1_800
     search_cache_ttl_seconds: int = 300
     search_backend_cooldown_seconds: int = 60
+    trust_tun_fake_ip_dns: bool = False
     cache_dir: str = str(DEFAULT_CACHE_DIR)
     trusted_proxy_domains: tuple[str, ...] = ()
     brief_concurrency: int = 3
@@ -390,12 +391,17 @@ def filter_search_results_by_domains(
 
 def load_config(path: str | Path | None = None) -> GlobalWebConfig:
     config_path = Path(path) if path else DEFAULT_CONFIG_PATH
-    raw: dict[str, Any] = {}
     try:
-        if config_path.exists():
-            raw = json.loads(config_path.read_text(encoding="utf-8"))
+        raw = default_config_dict()
     except Exception:
         raw = {}
+    try:
+        if config_path.exists():
+            user_raw = json.loads(config_path.read_text(encoding="utf-8"))
+            if isinstance(user_raw, dict):
+                raw.update(user_raw)
+    except Exception:
+        pass
 
     patterns = raw.get("allowed_model_patterns", ["deepseek"])
     if not isinstance(patterns, list):
@@ -404,10 +410,18 @@ def load_config(path: str | Path | None = None) -> GlobalWebConfig:
         str(item).strip().lower() for item in patterns if str(item).strip()
     ) or ("deepseek",)
 
+    search_providers = _normalize_search_providers(raw.get("search_providers"), raw.get("search_provider") or "duckduckgo")
+    legacy_search_provider = raw.get("search_provider")
+    search_provider = (
+        _normalize_search_provider_name(legacy_search_provider)
+        if legacy_search_provider
+        else (search_providers[0] if search_providers else "duckduckgo")
+    )
+
     return GlobalWebConfig(
         allowed_model_patterns=allowed_model_patterns,
-        search_provider=_normalize_search_provider_name(raw.get("search_provider") or "duckduckgo"),
-        search_providers=_normalize_search_providers(raw.get("search_providers"), raw.get("search_provider") or "duckduckgo"),
+        search_provider=search_provider,
+        search_providers=search_providers,
         allow_fetch_url_for_claude=bool(raw.get("allow_fetch_url_for_claude", False)),
         block_native_web_for_allowed_models=bool(raw.get("block_native_web_for_allowed_models", True)),
         searxng_base_url=str(raw.get("searxng_base_url") or "").strip().rstrip("/"),
@@ -423,6 +437,7 @@ def load_config(path: str | Path | None = None) -> GlobalWebConfig:
         cache_ttl_seconds=_bounded_int(raw.get("cache_ttl_seconds"), 1_800, 0, 86_400),
         search_cache_ttl_seconds=_bounded_int(raw.get("search_cache_ttl_seconds"), 300, 0, 3_600),
         search_backend_cooldown_seconds=_bounded_int(raw.get("search_backend_cooldown_seconds"), 60, 0, 3_600),
+        trust_tun_fake_ip_dns=bool(raw.get("trust_tun_fake_ip_dns", False)),
         cache_dir=str(raw.get("cache_dir") or DEFAULT_CACHE_DIR),
         trusted_proxy_domains=_normalize_string_tuple(raw.get("trusted_proxy_domains")),
         brief_concurrency=_bounded_int(raw.get("brief_concurrency"), 3, 1, 5),
@@ -451,6 +466,7 @@ def config_to_dict(config: GlobalWebConfig) -> dict[str, Any]:
         "cache_ttl_seconds": config.cache_ttl_seconds,
         "search_cache_ttl_seconds": config.search_cache_ttl_seconds,
         "search_backend_cooldown_seconds": config.search_backend_cooldown_seconds,
+        "trust_tun_fake_ip_dns": config.trust_tun_fake_ip_dns,
         "cache_dir": config.cache_dir,
         "trusted_proxy_domains": list(config.trusted_proxy_domains),
         "brief_concurrency": config.brief_concurrency,
@@ -525,6 +541,17 @@ def _is_trusted_proxy_ip(ip: str) -> bool:
         return False
 
 
+def _is_ip_literal(hostname: str) -> bool:
+    normalized = (hostname or "").strip().strip("[]").lower().rstrip(".")
+    if not normalized:
+        return False
+    try:
+        ipaddress.ip_address(normalized)
+        return True
+    except ValueError:
+        return False
+
+
 def _can_allow_trusted_proxy_resolution(
     hostname: str,
     private_ips: list[str],
@@ -536,11 +563,18 @@ def _can_allow_trusted_proxy_resolution(
     return _domain_matches(hostname, trusted_domains) and all(_is_trusted_proxy_ip(ip) for ip in private_ips)
 
 
+def _can_allow_tun_fake_ip_resolution(hostname: str, private_ips: list[str], trust_tun_fake_ip_dns: bool) -> bool:
+    if not trust_tun_fake_ip_dns or not private_ips or _is_ip_literal(hostname):
+        return False
+    return all(_is_trusted_proxy_ip(ip) for ip in private_ips)
+
+
 def evaluate_network_policy(
     url: str,
     allow_private_networks: bool = False,
     resolve_dns: bool = True,
     trusted_proxy_domains: tuple[str, ...] | list[str] | None = None,
+    trust_tun_fake_ip_dns: bool = False,
 ) -> dict[str, Any]:
     cleaned = (url or "").strip()
     parsed = urlparse(cleaned)
@@ -556,6 +590,7 @@ def evaluate_network_policy(
         "blocked_ips": [],
         "trusted_proxy": False,
         "trusted_proxy_domains": list(trusted_domains),
+        "trust_tun_fake_ip_dns": bool(trust_tun_fake_ip_dns),
         "reason": "",
     }
 
@@ -581,6 +616,11 @@ def evaluate_network_policy(
         blocked_ips = [ip for ip in resolved_ips if _is_private_host(ip)]
         decision["blocked_ips"] = blocked_ips
         if blocked_ips and not allow_private_networks:
+            if _can_allow_tun_fake_ip_resolution(hostname, blocked_ips, trust_tun_fake_ip_dns):
+                decision["allowed"] = True
+                decision["trusted_proxy"] = True
+                decision["reason"] = "trusted_tun_fake_ip_dns"
+                return decision
             if _can_allow_trusted_proxy_resolution(hostname, blocked_ips, trusted_domains):
                 decision["allowed"] = True
                 decision["trusted_proxy"] = True
@@ -599,6 +639,7 @@ async def evaluate_network_policy_async(
     allow_private_networks: bool = False,
     resolve_dns: bool = True,
     trusted_proxy_domains: tuple[str, ...] | list[str] | None = None,
+    trust_tun_fake_ip_dns: bool = False,
 ) -> dict[str, Any]:
     return await asyncio.to_thread(
         evaluate_network_policy,
@@ -606,6 +647,7 @@ async def evaluate_network_policy_async(
         allow_private_networks=allow_private_networks,
         resolve_dns=resolve_dns,
         trusted_proxy_domains=trusted_proxy_domains,
+        trust_tun_fake_ip_dns=trust_tun_fake_ip_dns,
     )
 
 
@@ -628,12 +670,14 @@ def validate_fetch_url(
     allow_private_networks: bool = False,
     resolve_dns: bool = True,
     trusted_proxy_domains: tuple[str, ...] | list[str] | None = None,
+    trust_tun_fake_ip_dns: bool = False,
 ) -> str:
     decision = evaluate_network_policy(
         url,
         allow_private_networks=allow_private_networks,
         resolve_dns=resolve_dns,
         trusted_proxy_domains=trusted_proxy_domains,
+        trust_tun_fake_ip_dns=trust_tun_fake_ip_dns,
     )
     if not decision["allowed"]:
         raise FetchSafetyError(_network_policy_error_message(decision))
@@ -645,17 +689,21 @@ async def validate_fetch_url_async(
     allow_private_networks: bool = False,
     resolve_dns: bool = True,
     trusted_proxy_domains: tuple[str, ...] | list[str] | None = None,
+    trust_tun_fake_ip_dns: bool = False,
 ) -> str:
     cleaned = validate_fetch_url(
         url,
         allow_private_networks=allow_private_networks,
         resolve_dns=False,
         trusted_proxy_domains=trusted_proxy_domains,
+        trust_tun_fake_ip_dns=trust_tun_fake_ip_dns,
     )
     if resolve_dns:
         hostname = urlparse(cleaned).hostname or ""
         private_ips = await asyncio.to_thread(_resolved_private_hosts, hostname)
         if private_ips and not allow_private_networks:
+            if _can_allow_tun_fake_ip_resolution(hostname, private_ips, trust_tun_fake_ip_dns):
+                return cleaned
             if _can_allow_trusted_proxy_resolution(hostname, private_ips, trusted_proxy_domains):
                 return cleaned
             raise FetchSafetyError(f"域名解析到受限地址，已阻止抓取: {', '.join(private_ips)}")
@@ -706,11 +754,13 @@ def build_fetch_target(
     url: str,
     allow_private_networks: bool = False,
     trusted_proxy_domains: tuple[str, ...] | list[str] | None = None,
+    trust_tun_fake_ip_dns: bool = False,
 ) -> FetchTarget:
     safe_url = validate_fetch_url(
         url,
         allow_private_networks=allow_private_networks,
         trusted_proxy_domains=trusted_proxy_domains,
+        trust_tun_fake_ip_dns=trust_tun_fake_ip_dns,
     )
     parsed = urlparse(safe_url)
     hostname = parsed.hostname or ""
@@ -719,10 +769,11 @@ def build_fetch_target(
 
     connect_host = ""
     for host in resolved_hosts:
-        if allow_private_networks or not _is_private_host(host) or _can_allow_trusted_proxy_resolution(
-            hostname,
-            [host],
-            trusted_proxy_domains,
+        if (
+            allow_private_networks
+            or not _is_private_host(host)
+            or _can_allow_tun_fake_ip_resolution(hostname, [host], trust_tun_fake_ip_dns)
+            or _can_allow_trusted_proxy_resolution(hostname, [host], trusted_proxy_domains)
         ):
             connect_host = host
             break
@@ -1392,11 +1443,13 @@ async def _limited_get(
     url: str,
     allow_private_networks: bool = False,
     trusted_proxy_domains: tuple[str, ...] | list[str] | None = None,
+    trust_tun_fake_ip_dns: bool = False,
 ) -> httpx.Response:
     current_url = await validate_fetch_url_async(
         url,
         allow_private_networks=allow_private_networks,
         trusted_proxy_domains=trusted_proxy_domains,
+        trust_tun_fake_ip_dns=trust_tun_fake_ip_dns,
     )
     redirect_count = 0
     for _ in range(6):
@@ -1404,6 +1457,7 @@ async def _limited_get(
             current_url,
             allow_private_networks=allow_private_networks,
             trusted_proxy_domains=trusted_proxy_domains,
+            trust_tun_fake_ip_dns=trust_tun_fake_ip_dns,
         )
         scheme = urlparse(target.url).scheme
         request_url = target.connect_url if scheme == "http" else target.url
@@ -1422,6 +1476,7 @@ async def _limited_get(
                     urljoin(target.url, location),
                     allow_private_networks=allow_private_networks,
                     trusted_proxy_domains=trusted_proxy_domains,
+                    trust_tun_fake_ip_dns=trust_tun_fake_ip_dns,
                 )
                 redirect_count += 1
                 continue
@@ -1448,8 +1503,13 @@ async def _limited_get(
 async def _fetch_jina_reader_markdown(
     client: httpx.AsyncClient,
     url: str,
+    trust_tun_fake_ip_dns: bool = False,
 ) -> dict[str, str]:
-    safe_url = await validate_fetch_url_async(url, allow_private_networks=False)
+    safe_url = await validate_fetch_url_async(
+        url,
+        allow_private_networks=False,
+        trust_tun_fake_ip_dns=trust_tun_fake_ip_dns,
+    )
     # Jina Reader 的公开用法是给原 URL 加前缀：https://r.jina.ai/https://example.com
     reader_url = f"https://r.jina.ai/{safe_url}"
     response = await client.get(reader_url, follow_redirects=True)
@@ -1816,6 +1876,13 @@ async def fetch_page(
 ) -> dict[str, Any]:
     config = config or load_config()
     status = StatusRecorder(status_callback)
+    trust_tun_fake_ip_dns = bool(_cfg(config, "trust_tun_fake_ip_dns", False))
+    fetch_policy_kwargs = {
+        "allow_private_networks": _cfg(config, "allow_private_networks", False),
+        "trusted_proxy_domains": _cfg(config, "trusted_proxy_domains", ()),
+    }
+    if trust_tun_fake_ip_dns:
+        fetch_policy_kwargs["trust_tun_fake_ip_dns"] = True
     try:
         target_url, resolved_from_ref_id = await _resolve_fetch_input(url, ref_id, status)
     except KeyError as exc:
@@ -1823,14 +1890,12 @@ async def fetch_page(
 
     network_policy = await evaluate_network_policy_async(
         target_url,
-        allow_private_networks=_cfg(config, "allow_private_networks", False),
-        trusted_proxy_domains=_cfg(config, "trusted_proxy_domains", ()),
+        **fetch_policy_kwargs,
     )
     try:
         safe_url = await validate_fetch_url_async(
             target_url,
-            allow_private_networks=_cfg(config, "allow_private_networks", False),
-            trusted_proxy_domains=_cfg(config, "trusted_proxy_domains", ()),
+            **fetch_policy_kwargs,
         )
     except FetchSafetyError as exc:
         await status.add("cc-web: fetch blocked by URL safety policy")
@@ -1873,13 +1938,11 @@ async def fetch_page(
                     response = await _limited_get(
                         client,
                         safe_url,
-                        allow_private_networks=_cfg(config, "allow_private_networks", False),
-                        trusted_proxy_domains=_cfg(config, "trusted_proxy_domains", ()),
+                        **fetch_policy_kwargs,
                     )
                     final_url = await validate_fetch_url_async(
                         str(response.url),
-                        allow_private_networks=_cfg(config, "allow_private_networks", False),
-                        trusted_proxy_domains=_cfg(config, "trusted_proxy_domains", ()),
+                        **fetch_policy_kwargs,
                     )
                     content_type = response.headers.get("content-type", "")
                     await status.add(f"cc-web: extracting markdown from {safe_url}")
@@ -1897,6 +1960,7 @@ async def fetch_page(
                         jina = await _fetch_jina_reader_markdown(
                             client,
                             safe_url,
+                            **({"trust_tun_fake_ip_dns": True} if trust_tun_fake_ip_dns else {}),
                         )
                         markdown_full = jina["markdown"]
                         reader_url = jina["reader_url"]
@@ -1912,6 +1976,7 @@ async def fetch_page(
                         jina = await _fetch_jina_reader_markdown(
                             client,
                             safe_url,
+                            **({"trust_tun_fake_ip_dns": True} if trust_tun_fake_ip_dns else {}),
                         )
                     except Exception as fallback_exc:
                         if primary_diagnostics:
@@ -2038,13 +2103,19 @@ async def research_brief(
     selected_results: list[dict[str, str]] = []
     skipped_results: list[dict[str, str]] = []
     seen_domains: set[str] = set()
+    trust_tun_fake_ip_dns = bool(_cfg(config, "trust_tun_fake_ip_dns", False))
+    validate_policy_kwargs = {
+        "allow_private_networks": _cfg(config, "allow_private_networks", False),
+        "trusted_proxy_domains": _cfg(config, "trusted_proxy_domains", ()),
+    }
+    if trust_tun_fake_ip_dns:
+        validate_policy_kwargs["trust_tun_fake_ip_dns"] = True
     for result in search.get("results", []):
         raw_url = result.get("url", "")
         try:
             safe_url = await validate_fetch_url_async(
                 raw_url,
-                allow_private_networks=_cfg(config, "allow_private_networks", False),
-                trusted_proxy_domains=_cfg(config, "trusted_proxy_domains", ()),
+                **validate_policy_kwargs,
             )
         except FetchSafetyError as exc:
             skipped_results.append(

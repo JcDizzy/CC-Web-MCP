@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from cc_web_mcp.config import ensure_user_config, resolve_config_path
+from cc_web_mcp.config import default_config_dict, ensure_user_config, resolve_config_path
 
 
 def test_resolve_config_path_uses_explicit_path(tmp_path):
@@ -26,7 +26,7 @@ def test_ensure_user_config_creates_default_json(tmp_path):
     assert path == config
     assert created is True
     data = json.loads(config.read_text(encoding="utf-8"))
-    assert data["search_providers"] == ["duckduckgo", "bing", "bing_cn"]
+    assert data == default_config_dict()
 
 
 def test_ensure_user_config_does_not_overwrite_existing_json(tmp_path):

@@ -318,7 +318,7 @@ def test_merge_hook_replaces_existing_uvx_guard_entry():
         "hooks": {
             "PreToolUse": [
                 {
-                    "matcher": "^(mcp__cc[-_]web__.*|WebFetch)$",
+                    "matcher": "^WebFetch$",
                     "hooks": [
                         {
                             "type": "command",
@@ -333,7 +333,7 @@ def test_merge_hook_replaces_existing_uvx_guard_entry():
     changed = install.merge_hook(
         data,
         "PreToolUse",
-        "^(mcp__cc[-_]web__.*|WebFetch)$",
+        "^WebFetch$",
         "uvx --from 'cc-web-mcp[pdf]' cc-web-mcp hook-guard",
         force=True,
     )
@@ -421,6 +421,7 @@ def test_force_install_hooks_replaces_console_script_guard_commands(tmp_path, mo
     assert changed is True
     assert len(session_entries) == 1
     assert len(pre_tool_entries) == 1
+    assert pre_tool_entries[0]["matcher"] == "^WebFetch$"
     assert session_entries[0]["hooks"][0]["command"] == "uvx"
     assert session_entries[0]["hooks"][0]["args"] == ["--from", "cc-web-mcp==0.1.2", "cc-web-mcp", "hook-guard"]
     assert pre_tool_entries[0]["hooks"][0]["command"] == "uvx"

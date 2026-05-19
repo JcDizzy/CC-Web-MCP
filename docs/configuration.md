@@ -40,6 +40,7 @@ cc-web-mcp config init
   "cache_ttl_seconds": 1800,
   "search_cache_ttl_seconds": 300,
   "search_backend_cooldown_seconds": 60,
+  "trust_tun_fake_ip_dns": false,
   "trusted_proxy_domains": [],
   "enable_pdf_extract": false
 }
@@ -150,6 +151,14 @@ cc-web-mcp config init
 ```json
 "trusted_proxy_domains": ["github.com"]
 ```
+
+如果你使用全局 TUN / fake-ip DNS，并确认公开域名会统一解析到 `198.18.0.0/15`，可以开启：
+
+```json
+"trust_tun_fake_ip_dns": true
+```
+
+该选项只放行“公开域名解析到 `198.18.0.0/15`”的情况；直接访问 `198.18.x.x`、`127.0.0.1`、内网地址和云 metadata 地址仍会被拦截。
 
 ## PDF 提取
 
