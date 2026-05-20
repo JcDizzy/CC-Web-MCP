@@ -388,6 +388,15 @@ def build_claude_mcp_remove_command(scope: str = "user", server_name: str = "cc-
     ]
 
 
+def is_missing_mcp_server_message(output: str) -> bool:
+    normalized = (output or "").lower()
+    return (
+        "not found" in normalized
+        or "does not exist" in normalized
+        or re.search(r"\bno\b.*\bserver\b.*\bfound\b", normalized, flags=re.DOTALL) is not None
+    )
+
+
 def build_init_summary(
     config_path: Path | None = None,
     memory_path: Path | None = None,
@@ -446,7 +455,7 @@ def register_claude_mcp(
             remove_command = build_claude_mcp_remove_command(scope=scope)
             remove_result = subprocess.run(remove_command, text=True, capture_output=True, check=False)
             remove_output = f"{remove_result.stdout}\n{remove_result.stderr}".lower()
-            if remove_result.returncode != 0 and "not found" not in remove_output and "does not exist" not in remove_output:
+            if remove_result.returncode != 0 and not is_missing_mcp_server_message(remove_output):
                 return False, remove_command, remove_result.stdout, remove_result.stderr
         result = subprocess.run(command, text=True, capture_output=True, check=False)
     except OSError as exc:

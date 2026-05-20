@@ -249,6 +249,47 @@ def test_force_register_claude_mcp_removes_existing_server_before_add(monkeypatc
     assert stderr == ""
 
 
+def test_force_register_claude_mcp_ignores_no_server_found_remove_output(monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_which(name):
+        if name == "claude":
+            return "claude"
+        if name == "uvx":
+            return "uvx"
+        return None
+
+    def fake_run(command, **kwargs):
+        calls.append(list(command))
+
+        class Result:
+            returncode = 0
+            stdout = "ok"
+            stderr = ""
+
+        if command[:3] == ["claude", "mcp", "remove"]:
+            Result.returncode = 1
+            Result.stdout = ""
+            Result.stderr = 'No MCP server found with name "cc-web"'
+        return Result()
+
+    monkeypatch.setattr(install.shutil, "which", fake_which)
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+
+    registered, command, stdout, stderr = install.register_claude_mcp(
+        scope="user",
+        runner="uvx",
+        uvx_package="cc-web-mcp==0.1.2",
+        force=True,
+    )
+
+    assert registered is True
+    assert calls[0] == ["claude", "mcp", "remove", "cc-web", "--scope", "user"]
+    assert calls[1] == command
+    assert stdout == "ok"
+    assert stderr == ""
+
+
 def test_resolve_claude_command_prefers_windows_cmd_launcher(monkeypatch):
     def fake_which(name):
         paths = {
